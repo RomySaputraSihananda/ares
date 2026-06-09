@@ -61,13 +61,14 @@ fn fmt_pnl(pnl: Decimal) -> String {
 // ── open trade ────────────────────────────────────────────────────────────────
 
 struct OpenTrade {
-    open_time:    String,
-    side:         Side,
-    entry_level:  Decimal,
-    actual_entry: Decimal,
-    sl:           Decimal,
-    tp:           Decimal,
-    volume:       Decimal,
+    open_time:      String,
+    side:           Side,
+    entry_level:    Decimal,
+    actual_entry:   Decimal,
+    sl:             Decimal,
+    tp:             Decimal,
+    volume:         Decimal,
+    open_candle_idx: usize,
 }
 
 // ── main ──────────────────────────────────────────────────────────────────────
@@ -100,10 +101,16 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|_| "0.8".to_string()).parse().context("CLOSE_PCT_MIN")?;
     let fvg_expiry: usize = std::env::var("FVG_EXPIRY_CANDLES")
         .unwrap_or_else(|_| "10".to_string()).parse().context("FVG_EXPIRY_CANDLES")?;
+    let min_fvg_pips: Decimal = std::env::var("MIN_FVG_PIPS")
+        .unwrap_or_else(|_| "3".to_string()).parse().context("MIN_FVG_PIPS")?;
+    let min_sl_pips: Decimal = std::env::var("MIN_SL_PIPS")
+        .unwrap_or_else(|_| "5".to_string()).parse().context("MIN_SL_PIPS")?;
     let sl_buffer: Decimal = std::env::var("SL_BUFFER")
         .unwrap_or_else(|_| "0".to_string()).parse().context("SL_BUFFER")?;
     let min_rr: Decimal = std::env::var("MIN_RR")
         .unwrap_or_else(|_| "1.5".to_string()).parse().context("MIN_RR")?;
+    let timeout_candles: usize = std::env::var("TIMEOUT_CANDLES")
+        .unwrap_or_else(|_| "0".to_string()).parse().context("TIMEOUT_CANDLES")?;
 
     let commission_per_lot: Decimal = std::env::var("COMMISSION_PER_LOT")
         .unwrap_or_else(|_| "0".to_string()).parse().context("COMMISSION_PER_LOT")?;
@@ -143,6 +150,10 @@ async fn main() -> anyhow::Result<()> {
     let spread_price   = spread_override.unwrap_or_else(|| Decimal::from(sym_info.spread) * point);
     let slippage_price = slippage_points * point;
     let profit_is_usd  = sym_info.currency_profit.eq_ignore_ascii_case("USD");
+    // for 5- or 3-decimal pairs (odd digit count) 1 pip = 10 points; for 2/4-decimal = 1 point
+    let pip_size = if sym_info.digits % 2 == 1 { point * Decimal::from(10u32) } else { point };
+    let min_zone_size  = min_fvg_pips * pip_size;
+    let min_sl_size    = min_sl_pips  * pip_size;
 
     let ema_vals: Vec<Option<Decimal>> = if ema_period > 0 {
         let closes: Vec<Decimal> = candles.iter().map(|c| c.close).collect();
@@ -177,6 +188,35 @@ async fn main() -> anyhow::Result<()> {
 
         // ── manage open trade ────────────────────────────────────────────────
         if let Some(ref t) = open_trade {
+            // timeout: force close after N candles
+            if timeout_candles > 0 && (i - t.open_candle_idx) >= timeout_candles {
+                let t           = open_trade.take().unwrap();
+                let exit_lvl    = candle.close;
+                let exit        = actual_exit(t.side, exit_lvl, false, spread_price, slippage_price);
+                let commission  = commission_per_lot * t.volume;
+                let profit_rate = if profit_is_usd || exit <= Decimal::ZERO { Decimal::ONE } else { Decimal::ONE / exit };
+                let pnl = (match t.side {
+                    Side::Long  => (exit - t.actual_entry) * t.volume * contract_size,
+                    Side::Short => (t.actual_entry - exit) * t.volume * contract_size,
+                }) * profit_rate - commission;
+                balance += pnl;
+                if balance > peak { peak = balance; }
+                let dd = balance - peak;
+                if dd < max_drawdown { max_drawdown = dd; }
+                timeouts  += 1;
+                trades    += 1;
+                total_pnl += pnl;
+                if pnl >= Decimal::ZERO { wins += 1; sum_wins += pnl; cur_consec = 0; }
+                else { losses += 1; sum_losses += pnl.abs(); cur_consec += 1; if cur_consec > max_consec { max_consec = cur_consec; } }
+                println!(
+                    "[{} {}] {} {} entry={} sl={} tp={} vol={:.2} → TIMEOUT exit={} pnl={} bal={:.2}",
+                    t.open_time, tf_str, symbol,
+                    if t.side == Side::Long { "LONG " } else { "SHORT" },
+                    fmt_price(t.actual_entry, prec), fmt_price(t.sl, prec), fmt_price(t.tp, prec), t.volume,
+                    fmt_price(exit, prec), fmt_pnl(pnl), balance,
+                );
+                continue;
+            }
             let (sl_hit, tp_hit) = match t.side {
                 Side::Long  => (candle.low  <= t.sl, candle.high >= t.tp),
                 Side::Short => (candle.high >= t.sl, candle.low  <= t.tp),
@@ -251,6 +291,7 @@ async fn main() -> anyhow::Result<()> {
 
         // ── expire stale FVG ──────────────────────────────────────────────────
         if pending_fvg.as_ref().is_some_and(|f| i >= f.expiry_idx) {
+            missed_fills += 1;
             pending_fvg = None;
         }
 
@@ -270,11 +311,16 @@ async fn main() -> anyhow::Result<()> {
                 };
 
                 if ema_ok {
+                    // SL placed at impulse candle's structural extreme, not zone edge
                     let sl = match fvg.side {
-                        Side::Long  => fvg.zone_low  - sl_buffer,
-                        Side::Short => fvg.zone_high + sl_buffer,
+                        Side::Long  => fvg.impulse_sl - sl_buffer,
+                        Side::Short => fvg.impulse_sl + sl_buffer,
                     };
                     let sl_dist = (fvg.entry - sl).abs();
+                    if sl_dist < min_sl_size {
+                        pending_fvg = None;
+                        continue;
+                    }
                     let tp = match fvg.side {
                         Side::Long  => fvg.entry + sl_dist * min_rr,
                         Side::Short => fvg.entry - sl_dist * min_rr,
@@ -285,8 +331,7 @@ async fn main() -> anyhow::Result<()> {
                         Side::Short => candle.high >= fvg.entry,
                     };
                     if !fill_ok {
-                        missed_fills += 1;
-                        pending_fvg = None;
+                        // zone touched but limit order not reached yet — keep FVG pending
                         continue;
                     }
 
@@ -303,13 +348,14 @@ async fn main() -> anyhow::Result<()> {
                         Some(v) => {
                             let ae = actual_entry(fvg.side, fvg.entry, spread_price);
                             open_trade = Some(OpenTrade {
-                                open_time:    candle.time.format("%Y-%m-%d %H:%M").to_string(),
-                                side:         fvg.side,
-                                entry_level:  fvg.entry,
-                                actual_entry: ae,
+                                open_time:       candle.time.format("%Y-%m-%d %H:%M").to_string(),
+                                side:            fvg.side,
+                                entry_level:     fvg.entry,
+                                actual_entry:    ae,
                                 sl,
                                 tp,
-                                volume: v,
+                                volume:          v,
+                                open_candle_idx: i,
                             });
                             pending_fvg = None;
                         }
@@ -328,6 +374,7 @@ async fn main() -> anyhow::Result<()> {
             candle,
             body_pct_min,
             close_pct_min,
+            min_zone_size,
             i,
             fvg_expiry,
         );
@@ -375,7 +422,8 @@ async fn main() -> anyhow::Result<()> {
 
     println!("─────────────────────────────────────────");
     println!("Ares Scalper: {} {} | {} candles", symbol, tf_str, total);
-    println!("Strategy : Momentum FVG  body≥{body_pct_min}  close≥{close_pct_min}  expiry={fvg_expiry}c  min_rr={min_rr}");
+    let timeout_str = if timeout_candles > 0 { format!("  timeout={timeout_candles}c") } else { String::new() };
+    println!("Strategy : Momentum FVG  body≥{body_pct_min}  close≥{close_pct_min}  expiry={fvg_expiry}c  min_fvg={min_fvg_pips}pip  min_sl={min_sl_pips}pip  min_rr={min_rr}{timeout_str}");
     println!("Friction : spread={}  slip={}  commission/lot={}", fmt_price(spread_price, prec), fmt_price(slippage_price, prec), commission_per_lot);
     println!("─────────────────────────────────────────");
     println!("Trades         : {trades}");

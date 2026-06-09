@@ -224,6 +224,7 @@ dependencies = [
  "chrono-tz",
  "rust_decimal",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -4,11 +4,12 @@ use rust_decimal::Decimal;
 /// A momentum FVG setup pending entry fill.
 #[derive(Debug, Clone)]
 pub struct PendingFvg {
-    pub side:       Side,
-    pub zone_high:  Decimal,
-    pub zone_low:   Decimal,
-    pub entry:      Decimal,  // FVG midpoint — limit order level
-    pub expiry_idx: usize,    // invalidate if not filled by this walk-forward index
+    pub side:        Side,
+    pub zone_high:   Decimal,
+    pub zone_low:    Decimal,
+    pub entry:       Decimal,   // FVG midpoint — limit order level
+    pub impulse_sl:  Decimal,   // impulse candle's low (long) or high (short) — structural SL
+    pub expiry_idx:  usize,     // invalidate if not filled by this walk-forward index
 }
 
 impl PendingFvg {
@@ -52,6 +53,7 @@ pub fn momentum_side(c: &Candle, body_pct_min: Decimal, close_pct_min: Decimal) 
 /// - `impulse` must qualify as a momentum candle
 /// - There must be a price gap between `pre` and `post` matching the momentum side
 ///   (bullish: post.low > pre.high; bearish: post.high < pre.low)
+/// - FVG zone must be at least `min_zone_size` wide (rejects micro-gaps)
 ///
 /// `post_idx` is the walk-forward index of `post` (used to set expiry).
 pub fn detect(
@@ -60,6 +62,7 @@ pub fn detect(
     post:           &Candle,
     body_pct_min:   Decimal,
     close_pct_min:  Decimal,
+    min_zone_size:  Decimal,
     post_idx:       usize,
     expiry_candles: usize,
 ) -> Option<PendingFvg> {
@@ -71,17 +74,22 @@ pub fn detect(
         _ => return None,
     };
 
-    if zone_high <= zone_low {
+    if zone_high - zone_low < min_zone_size {
         return None;
     }
 
     let entry = (zone_high + zone_low) / Decimal::from(2u32);
+    let impulse_sl = match side {
+        Side::Long  => impulse.low,
+        Side::Short => impulse.high,
+    };
 
     Some(PendingFvg {
         side,
         zone_high,
         zone_low,
         entry,
+        impulse_sl,
         expiry_idx: post_idx + expiry_candles,
     })
 }
@@ -133,7 +141,8 @@ mod tests {
         let impulse = candle("1.1010", "1.1110", "1.1005", "1.1100"); // big bull
         let post    = candle("1.1090", "1.1130", "1.1070", "1.1120"); // low > pre.high
 
-        let fvg = detect(&pre, &impulse, &post, "0.6".parse().unwrap(), "0.8".parse().unwrap(), 10, 5);
+        let min_zone: Decimal = "0.0001".parse().unwrap(); // 1 pip min — zone is 50 pips, passes
+        let fvg = detect(&pre, &impulse, &post, "0.6".parse().unwrap(), "0.8".parse().unwrap(), min_zone, 10, 5);
         assert!(fvg.is_some());
         let fvg = fvg.unwrap();
         assert_eq!(fvg.side, Side::Long);
@@ -148,7 +157,8 @@ mod tests {
         let impulse = candle("1.1050", "1.1110", "1.1040", "1.1100");
         let post    = candle("1.1090", "1.1130", "1.1055", "1.1120"); // post.low=1.1055 < pre.high=1.1060
 
-        let fvg = detect(&pre, &impulse, &post, "0.6".parse().unwrap(), "0.8".parse().unwrap(), 10, 5);
+        let min_zone: Decimal = "0.0001".parse().unwrap();
+        let fvg = detect(&pre, &impulse, &post, "0.6".parse().unwrap(), "0.8".parse().unwrap(), min_zone, 10, 5);
         assert!(fvg.is_none());
     }
 }
