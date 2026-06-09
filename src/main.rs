@@ -133,6 +133,11 @@ async fn main() -> anyhow::Result<()> {
         Err(_) => None,
     };
 
+    // Stop-out level as fraction of initial balance (0.0 = Exness default: equity hits $0).
+    // e.g. STOP_OUT_PCT=0.2 stops trading when equity drops to 20% of starting balance.
+    let stop_out_pct: Decimal = std::env::var("STOP_OUT_PCT")
+        .unwrap_or_else(|_| "0.0".to_string()).parse().context("STOP_OUT_PCT")?;
+
     let timeframe = tf_str.parse::<domain::Timeframe>().map_err(|e| anyhow::anyhow!("{e}"))?;
     let mt5 = mt5_client::Mt5Client::new(mt5_base_url);
 
@@ -164,11 +169,14 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!(total, "starting walk-forward");
 
+    let stop_out_balance = backtest_balance * stop_out_pct;
+
     let mut balance        = backtest_balance;
     let mut peak           = balance;
     let mut max_drawdown   = Decimal::ZERO;
     let mut open_trade: Option<OpenTrade>              = None;
     let mut pending_fvg: Option<detector::PendingFvg>  = None;
+    let mut margin_called  = false;
 
     let mut trades         = 0u32;
     let mut wins           = 0u32;
@@ -217,6 +225,52 @@ async fn main() -> anyhow::Result<()> {
                 );
                 continue;
             }
+            // ── stop-out check: worst-case equity on this candle ─────────────
+            if stop_out_pct > Decimal::ZERO {
+                let worst_price = match t.side {
+                    Side::Long  => candle.low,
+                    Side::Short => candle.high,
+                };
+                let pr_w = if profit_is_usd || worst_price <= Decimal::ZERO {
+                    Decimal::ONE
+                } else {
+                    Decimal::ONE / worst_price
+                };
+                let unrealized_w = (match t.side {
+                    Side::Long  => (worst_price - t.actual_entry) * t.volume * contract_size,
+                    Side::Short => (t.actual_entry - worst_price) * t.volume * contract_size,
+                }) * pr_w - commission_per_lot * t.volume;
+                if balance + unrealized_w <= stop_out_balance {
+                    let t       = open_trade.take().unwrap();
+                    let exit    = actual_exit(t.side, worst_price, true, spread_price, slippage_price);
+                    let commission = commission_per_lot * t.volume;
+                    let pnl = (match t.side {
+                        Side::Long  => (exit - t.actual_entry) * t.volume * contract_size,
+                        Side::Short => (t.actual_entry - exit) * t.volume * contract_size,
+                    }) * pr_w - commission;
+                    balance += pnl;
+                    if balance > peak { peak = balance; }
+                    let dd = balance - peak;
+                    if dd < max_drawdown { max_drawdown = dd; }
+                    trades  += 1;
+                    losses  += 1;
+                    sum_losses += pnl.abs();
+                    cur_consec += 1;
+                    if cur_consec > max_consec { max_consec = cur_consec; }
+                    total_pnl += pnl;
+                    println!(
+                        "[{} {}] {} {} entry={} → STOP-OUT exit={} pnl={} bal={:.2}",
+                        t.open_time, tf_str, symbol,
+                        if t.side == Side::Long { "LONG " } else { "SHORT" },
+                        fmt_price(t.actual_entry, prec),
+                        fmt_price(exit, prec),
+                        fmt_pnl(pnl), balance,
+                    );
+                    margin_called = true;
+                    break;
+                }
+            }
+
             let (sl_hit, tp_hit) = match t.side {
                 Side::Long  => (candle.low  <= t.sl, candle.high >= t.tp),
                 Side::Short => (candle.high >= t.sl, candle.low  <= t.tp),
@@ -335,6 +389,12 @@ async fn main() -> anyhow::Result<()> {
                         continue;
                     }
 
+                    if balance <= stop_out_balance {
+                        pending_fvg   = None;
+                        margin_called = true;
+                        break;
+                    }
+
                     let value_per_lot = if profit_is_usd || candle.close == Decimal::ZERO {
                         contract_size
                     } else {
@@ -443,6 +503,9 @@ async fn main() -> anyhow::Result<()> {
     println!("Max Drawdown   : {max_drawdown:.2}");
     println!("Return         : {ret_pct:.1}%");
     println!("Final Balance  : {balance:.2}");
+    if margin_called {
+        println!("*** MARGIN CALL — stop-out triggered at {:.1}% of initial balance ***", stop_out_pct * Decimal::from(100u32));
+    }
     println!("─────────────────────────────────────────");
 
     Ok(())
