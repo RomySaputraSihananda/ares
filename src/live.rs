@@ -95,21 +95,22 @@ impl PosState {
     fn clear(symbol: &str) { let _ = std::fs::remove_file(Self::path(symbol)); }
 }
 
-// ── SSE position event ────────────────────────────────────────────────────────
+// ── SSE event payload (unified for positions + orders) ────────────────────────
 
 #[derive(Debug, Deserialize)]
-struct SsePosition {
+struct SsePayload {
     ticket:        u64,
     symbol:        String,
-    #[serde(rename = "type")]
-    pos_type:      u32,
-    volume:        f64,
-    price_open:    f64,
-    price_current: Option<f64>,
-    sl:            f64,
-    tp:            f64,
-    profit:        f64,
     magic:         u64,
+    #[serde(rename = "type")]
+    kind:          Option<u32>,
+    volume:        Option<f64>,
+    price_open:    Option<f64>,   // position open price
+    price:         Option<f64>,   // order limit price
+    price_current: Option<f64>,
+    sl:            Option<f64>,
+    tp:            Option<f64>,
+    profit:        Option<f64>,
 }
 
 // ── entry point ───────────────────────────────────────────────────────────────
@@ -132,16 +133,39 @@ pub async fn run(mt5: &mt5_client::Mt5Client, cfg: &LiveConfig) -> Result<()> {
     let tf_mins    = timeframe_minutes(cfg.timeframe);
     let expiry_dur = chrono::Duration::minutes(tf_mins * cfg.fvg_expiry_candles as i64);
 
-    // spawn SSE position listener
     if cfg.telegram.is_some() {
         let mt5_arc  = Arc::new(mt5_client::Mt5Client::new(cfg.mt5_base_url.clone()));
         let http_arc = Arc::new(reqwest::Client::new());
-        let symbol   = cfg.symbol.clone();
-        let tg       = cfg.telegram.clone();
-        let base_url = cfg.mt5_base_url.clone();
-        tokio::spawn(async move {
-            sse_task(mt5_arc, http_arc, base_url, symbol, tg).await;
-        });
+
+        // SSE position listener
+        {
+            let mt5_c    = Arc::clone(&mt5_arc);
+            let http_c   = Arc::clone(&http_arc);
+            let symbol   = cfg.symbol.clone();
+            let tg       = cfg.telegram.clone();
+            let base_url = cfg.mt5_base_url.clone();
+            tokio::spawn(async move {
+                sse_task(mt5_c, http_c, base_url, symbol, tg).await;
+            });
+        }
+
+        // hourly PnL summary
+        {
+            let mt5_c  = Arc::clone(&mt5_arc);
+            let http_c = Arc::clone(&http_arc);
+            let symbol = cfg.symbol.clone();
+            let tg     = cfg.telegram.clone().unwrap();
+            tokio::spawn(async move {
+                let mut ticker = interval(Duration::from_secs(3600));
+                ticker.tick().await; // skip first immediate tick
+                loop {
+                    ticker.tick().await;
+                    if let Err(e) = send_pnl_summary(&mt5_c, &http_c, &symbol, &tg).await {
+                        tracing::warn!(symbol = %symbol, "PnL summary error: {e:#}");
+                    }
+                }
+            });
+        }
     }
 
     let http = reqwest::Client::new();
@@ -424,62 +448,67 @@ async fn handle_sse_event(
     data:       &str,
     tg:         &Option<TelegramConfig>,
 ) {
-    let pos: SsePosition = match serde_json::from_str(data) {
+    let payload: SsePayload = match serde_json::from_str(data) {
         Ok(p)  => p,
-        Err(e) => { tracing::warn!("SSE parse error: {e:#}"); return; }
+        Err(e) => { tracing::warn!(%symbol, event_type, "SSE parse error: {e:#}"); return; }
     };
 
-    if pos.magic != MAGIC || pos.symbol != symbol { return; }
+    if payload.magic != MAGIC || payload.symbol != symbol { return; }
 
     match event_type {
-        "position_opened" => on_position_opened(http, symbol, &pos, tg).await,
-        "position_closed" => on_position_closed(mt5, http, symbol, &pos, tg).await,
-        _ => {}
+        "position_opened"   => on_position_opened(http, symbol, &payload, tg).await,
+        "position_closed"   => on_position_closed(mt5, http, symbol, &payload, tg).await,
+        "position_modified" => on_position_modified(http, symbol, &payload, tg).await,
+        "order_placed"      => tracing::info!(%symbol, ticket = payload.ticket, "order placed (SSE)"),
+        "order_cancelled"   => on_order_cancelled(http, symbol, &payload, tg).await,
+        "order_modified"    => on_order_modified(http, symbol, &payload, tg).await,
+        other               => tracing::debug!(%symbol, "unknown SSE event: {other}"),
     }
 }
 
 async fn on_position_opened(
-    http:   &reqwest::Client,
-    symbol: &str,
-    pos:    &SsePosition,
-    tg:     &Option<TelegramConfig>,
+    http:    &reqwest::Client,
+    symbol:  &str,
+    payload: &SsePayload,
+    tg:      &Option<TelegramConfig>,
 ) {
-    tracing::info!(%symbol, ticket = pos.ticket, "position opened (SSE)");
+    tracing::info!(%symbol, ticket = payload.ticket, "position opened (SSE)");
 
-    // promote pending state → position state
-    let state = State::load(symbol);
+    let state     = State::load(symbol);
     let tg_msg_id = state.as_ref().and_then(|s| s.tg_message_id);
+    let kind      = payload.kind.unwrap_or(0);
+    let entry     = payload.price_open.unwrap_or(0.0);
+    let sl        = payload.sl.unwrap_or(0.0);
+    let tp        = payload.tp.unwrap_or(0.0);
+    let volume    = payload.volume.unwrap_or(0.0);
 
     let ps = PosState {
-        ticket:        pos.ticket,
+        ticket:        payload.ticket,
         tg_message_id: tg_msg_id,
-        side:          if pos.pos_type == 0 { "Long".to_string() } else { "Short".to_string() },
-        entry:         pos.price_open,
-        sl:            pos.sl,
-        tp:            pos.tp,
-        volume:        pos.volume,
+        side:          if kind == 0 { "Long".to_string() } else { "Short".to_string() },
+        entry, sl, tp, volume,
     };
     let _ = ps.save(symbol);
     State::clear(symbol);
 
     if let (Some(tg), Some(msg_id)) = (tg, tg_msg_id) {
-        let side_str = &ps.side;
         let text = format!(
             "⚡ <b>FILLED</b>\n{} {}\nEntry: {:.5}\nSL: {:.5}   TP: {:.5}\nVol: {:.2} lot",
-            symbol, side_str, pos.price_open, pos.sl, pos.tp, pos.volume,
+            symbol, ps.side, entry, sl, tp, volume,
         );
         let _ = tg.edit(http, msg_id, &text).await;
     }
 }
 
 async fn on_position_closed(
-    mt5:    &mt5_client::Mt5Client,
-    http:   &reqwest::Client,
-    symbol: &str,
-    pos:    &SsePosition,
-    tg:     &Option<TelegramConfig>,
+    mt5:     &mt5_client::Mt5Client,
+    http:    &reqwest::Client,
+    symbol:  &str,
+    payload: &SsePayload,
+    tg:      &Option<TelegramConfig>,
 ) {
-    tracing::info!(%symbol, ticket = pos.ticket, profit = pos.profit, "position closed (SSE)");
+    let profit = payload.profit.unwrap_or(0.0);
+    tracing::info!(%symbol, ticket = payload.ticket, profit, "position closed (SSE)");
 
     let ps = PosState::load(symbol);
     PosState::clear(symbol);
@@ -487,24 +516,94 @@ async fn on_position_closed(
     let Some(tg) = tg else { return };
     let Some(msg_id) = ps.as_ref().and_then(|s| s.tg_message_id) else { return };
 
-    let (icon, label) = if pos.profit >= 0.0 { ("✅", "TP HIT") } else { ("❌", "SL HIT") };
-    let exit = pos.price_current.unwrap_or(0.0);
-    let entry = ps.as_ref().map(|s| s.entry).unwrap_or(pos.price_open);
+    let (icon, label) = if profit >= 0.0 { ("✅", "TP HIT") } else { ("❌", "SL HIT") };
+    let exit     = payload.price_current.unwrap_or(0.0);
+    let entry    = ps.as_ref().map(|s| s.entry).unwrap_or(payload.price_open.unwrap_or(0.0));
+    let volume   = payload.volume.unwrap_or(ps.as_ref().map(|s| s.volume).unwrap_or(0.0));
     let side_str = ps.as_ref().map(|s| s.side.as_str()).unwrap_or("?");
 
     let acct_bal = mt5.account().await.ok().map(|a| a.balance).unwrap_or(Decimal::ZERO);
 
     let text = format!(
         "{} <b>{} {:+.2}</b>\n{} {}\n{:.5} → {:.5}\nVol: {:.2} lot\nBal: ${}",
-        icon, label, pos.profit,
+        icon, label, profit,
         symbol, side_str,
         entry, exit,
-        pos.volume, acct_bal,
+        volume, acct_bal,
     );
     let _ = tg.edit(http, msg_id, &text).await;
+}
 
-    // send PnL summary after close
-    let _ = send_pnl_summary(mt5, http, symbol, tg).await;
+async fn on_position_modified(
+    http:    &reqwest::Client,
+    symbol:  &str,
+    payload: &SsePayload,
+    tg:      &Option<TelegramConfig>,
+) {
+    tracing::info!(%symbol, ticket = payload.ticket, "position modified (SSE)");
+
+    if let Some(mut ps) = PosState::load(symbol) {
+        if let Some(sl) = payload.sl     { ps.sl     = sl; }
+        if let Some(tp) = payload.tp     { ps.tp     = tp; }
+        if let Some(v)  = payload.volume { ps.volume = v;  }
+        let _ = ps.save(symbol);
+
+        if let (Some(tg), Some(msg_id)) = (tg, ps.tg_message_id) {
+            let text = format!(
+                "🔄 <b>MODIFIED</b>\n{} {}\nEntry: {:.5}\nSL: {:.5}   TP: {:.5}\nVol: {:.2} lot",
+                symbol, ps.side, ps.entry, ps.sl, ps.tp, ps.volume,
+            );
+            let _ = tg.edit(http, msg_id, &text).await;
+        }
+    }
+}
+
+async fn on_order_cancelled(
+    http:    &reqwest::Client,
+    symbol:  &str,
+    payload: &SsePayload,
+    tg:      &Option<TelegramConfig>,
+) {
+    tracing::info!(%symbol, ticket = payload.ticket, "order cancelled (SSE)");
+
+    let state = State::load(symbol);
+    if state.as_ref().map(|s| s.ticket) != Some(payload.ticket) { return; }
+
+    if let (Some(tg), Some(msg_id)) = (tg, state.as_ref().and_then(|s| s.tg_message_id)) {
+        let side_str = state.as_ref().map(|s| s.side.as_str()).unwrap_or("?");
+        let entry    = state.as_ref().map(|s| s.entry).unwrap_or(0.0);
+        let text = format!(
+            "🚫 <b>CANCELLED</b>\n{} {}\nEntry: {:.5}",
+            symbol, side_str, entry,
+        );
+        let _ = tg.edit(http, msg_id, &text).await;
+    }
+    State::clear(symbol);
+}
+
+async fn on_order_modified(
+    http:    &reqwest::Client,
+    symbol:  &str,
+    payload: &SsePayload,
+    tg:      &Option<TelegramConfig>,
+) {
+    tracing::info!(%symbol, ticket = payload.ticket, "order modified (SSE)");
+
+    if let Some(mut state) = State::load(symbol) {
+        if state.ticket != payload.ticket { return; }
+        if let Some(p)  = payload.price { state.entry = p; }
+        if let Some(sl) = payload.sl    { state.sl    = sl; }
+        if let Some(tp) = payload.tp    { state.tp    = tp; }
+        let _ = state.save(symbol);
+
+        if let (Some(tg), Some(msg_id)) = (tg, state.tg_message_id) {
+            let text = format!(
+                "🔄 <b>ORDER MODIFIED</b>\n{} {}\nEntry: {:.5}\nSL: {:.5}   TP: {:.5}",
+                symbol, state.side, state.entry, state.sl, state.tp,
+            );
+            let _ = tg.edit(http, msg_id, &text).await;
+        }
+    }
 }
 
 // ── PnL summary ───────────────────────────────────────────────────────────────

@@ -43,6 +43,22 @@ Polls MT5 every `LIVE_POLL_SECS` seconds. Places a pending limit order when a va
 
 State for each symbol is persisted in `.ares_state_{symbol}.json` so the bot survives restarts without orphaning orders.
 
+### Telegram notifications
+
+Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` to receive real-time trade updates. Each trade lifecycle is tracked as a single edited message:
+
+| Event | Message |
+|---|---|
+| Pending order placed | 🟡 PENDING — entry / SL / TP / lot |
+| Limit order filled | ⚡ FILLED |
+| Position SL/TP modified | 🔄 MODIFIED |
+| TP hit | ✅ TP HIT — P&L + balance |
+| SL hit | ❌ SL HIT — P&L + balance |
+| Order expired | ⏱ EXPIRED |
+| Order cancelled externally | 🚫 CANCELLED |
+
+A 📊 PnL summary (today + all-time) is sent automatically every hour.
+
 ### Multi-pair
 
 ```bash
@@ -80,6 +96,9 @@ Copy `.env.example` to `.env` and adjust. All fields are optional except `MT5_BA
 | `TIMEOUT_CANDLES` | `0` | Force-close open trade after N bars (0 = disabled) |
 | `LIVE` | `false` | Set to `true` to enable live mode |
 | `LIVE_POLL_SECS` | `30` | Poll interval for live mode |
+| `TELEGRAM_BOT_TOKEN` | — | Bot token from @BotFather (optional) |
+| `TELEGRAM_CHAT_ID` | — | Target chat/group ID |
+| `TELEGRAM_THREAD_ID` | — | Forum thread ID (optional) |
 
 ## Backtest results
 
@@ -102,9 +121,12 @@ ares/
 ├── src/
 │   ├── main.rs        # entry point, env parsing, mode dispatch
 │   ├── backtest.rs    # walk-forward simulation engine
-│   ├── live.rs        # live trading loop
+│   ├── live.rs        # live trading loop + SSE position listener
 │   ├── detector.rs    # momentum FVG detection
-│   └── helpers.rs     # shared math utilities
+│   ├── telegram.rs    # Telegram Bot API client
+│   ├── helpers.rs     # shared math utilities
+│   └── bin/
+│       └── sim.rs     # Telegram notification simulator (no MT5 needed)
 └── crates/
     ├── domain/        # shared types (Candle, Symbol, Timeframe, Side…)
     └── mt5-client/    # async HTTP client for the MT5 bridge
