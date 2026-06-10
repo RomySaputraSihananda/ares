@@ -1,1 +1,3 @@
 /target
+.env
+.ares_state_*.json

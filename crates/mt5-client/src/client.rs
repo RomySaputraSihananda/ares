@@ -1,7 +1,7 @@
 use domain::{AccountInfo, Candle, Position, Symbol, Tick, Timeframe};
 
 use crate::error::Mt5Error;
-use crate::types::{ApiErrorBody, DataOne, DataVec, HealthStatus, OrderCheckResult, TradeRequest, TradeResult};
+use crate::types::{ApiErrorBody, DataOne, DataVec, HealthStatus, OrderCheckResult, PendingOrder, TradeRequest, TradeResult};
 
 pub struct Mt5Client {
     base_url: String,
@@ -84,6 +84,27 @@ impl Mt5Client {
         let text = self.fetch_text(self.http.get(&url)).await?;
         tracing::debug!(endpoint = %url, "mt5 response ok");
         let w: DataVec<Position> = serde_json::from_str(&text)?;
+        Ok(w.data)
+    }
+
+    pub async fn orders(&self, symbol: &str) -> Result<Vec<PendingOrder>, Mt5Error> {
+        let url = format!("{}/orders", self.base_url);
+        let text = self
+            .fetch_text(self.http.get(&url).query(&[("symbol", symbol)]))
+            .await?;
+        tracing::debug!(endpoint = %url, "mt5 response ok");
+        let w: DataVec<PendingOrder> = serde_json::from_str(&text)?;
+        Ok(w.data)
+    }
+
+    pub async fn cancel_order(&self, ticket: u64, symbol: &str) -> Result<TradeResult, Mt5Error> {
+        let req = TradeRequest::cancel(symbol, ticket);
+        #[derive(serde::Serialize)]
+        struct Body<'a> { request: &'a TradeRequest }
+        let url  = format!("{}/order/send", self.base_url);
+        let text = self.fetch_text(self.http.post(&url).json(&Body { request: &req })).await?;
+        tracing::debug!(endpoint = %url, ticket, "cancel order ok");
+        let w: DataOne<TradeResult> = serde_json::from_str(&text)?;
         Ok(w.data)
     }
 
@@ -192,13 +213,15 @@ mod tests {
         let tr = TradeRequest {
             action: 1,
             symbol: "BTCUSDm".into(),
-            volume: 0.01,
-            order_type: 0,
-            price: 60720.0,
+            volume: Some(0.01),
+            order_type: Some(0),
+            price: Some(60720.0),
             sl: None,
             tp: None,
             magic: None,
             comment: None,
+            order: None,
+            deviation: None,
         };
         let json = serde_json::to_string(&tr).unwrap();
         assert!(json.contains(r#""type":0"#), "order_type must serialize as \"type\"");

@@ -48,6 +48,7 @@ dependencies = [
  "mt5-client",
  "rust_decimal",
  "serde",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
