@@ -4,4 +4,5 @@ mod types;
 
 pub use client::Mt5Client;
 pub use error::Mt5Error;
+pub use domain::Deal;
 pub use types::{HealthStatus, OrderCheckResult, PendingOrder, TradeRequest, TradeResult};

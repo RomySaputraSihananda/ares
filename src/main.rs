@@ -2,6 +2,7 @@ mod backtest;
 mod detector;
 mod helpers;
 mod live;
+mod telegram;
 
 use anyhow::Context;
 use chrono::NaiveDate;
@@ -90,12 +91,26 @@ async fn main() -> anyhow::Result<()> {
     let spread_override  = env_spread_override()?;
     let ema_period       = env_usize("EMA_PERIOD",       "20")?;
 
-    let mt5 = Arc::new(mt5_client::Mt5Client::new(mt5_base_url));
+    let mt5 = Arc::new(mt5_client::Mt5Client::new(mt5_base_url.clone()));
 
     // ── live mode ─────────────────────────────────────────────────────────────
     let live_mode = std::env::var("LIVE").map(|v| v == "true" || v == "1").unwrap_or(false);
     if live_mode {
         let poll_secs = env_u64("LIVE_POLL_SECS", "30")?;
+        let tg_token   = std::env::var("TELEGRAM_BOT_TOKEN").ok().filter(|s| !s.is_empty());
+        let tg_chat_id = std::env::var("TELEGRAM_CHAT_ID").ok()
+            .and_then(|s| s.parse::<i64>().ok());
+        let tg_thread_id = std::env::var("TELEGRAM_THREAD_ID").ok()
+            .and_then(|s| s.parse::<i64>().ok());
+        let telegram = match (tg_token, tg_chat_id) {
+            (Some(token), Some(chat_id)) => Some(telegram::TelegramConfig {
+                token,
+                chat_id,
+                thread_id: tg_thread_id,
+            }),
+            _ => None,
+        };
+
         let base_cfg = live::LiveConfig {
             symbol:            String::new(), // filled per-spawn
             timeframe,
@@ -111,6 +126,8 @@ async fn main() -> anyhow::Result<()> {
             spread_override,
             ema_period,
             poll_secs,
+            mt5_base_url: mt5_base_url.clone(),
+            telegram,
         };
 
         let mut handles = Vec::new();

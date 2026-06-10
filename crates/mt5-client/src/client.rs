@@ -122,6 +122,23 @@ impl Mt5Client {
         Ok(w.data)
     }
 
+    pub async fn history_deals(
+        &self,
+        date_from: &str,
+        date_to: &str,
+        symbol: Option<&str>,
+    ) -> Result<Vec<domain::Deal>, Mt5Error> {
+        let url = format!("{}/history/deals", self.base_url);
+        let mut req = self.http.get(&url)
+            .query(&[("date_from", date_from), ("date_to", date_to)]);
+        if let Some(sym) = symbol {
+            req = req.query(&[("symbol", sym)]);
+        }
+        let text = self.fetch_text(req).await?;
+        let w: DataVec<domain::Deal> = serde_json::from_str(&text)?;
+        Ok(w.data)
+    }
+
     pub async fn place_order(
         &self,
         request: &TradeRequest,
