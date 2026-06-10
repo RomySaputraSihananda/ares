@@ -68,13 +68,14 @@ impl TradeRequest {
     }
 
     pub fn cancel(symbol: impl Into<String>, ticket: u64) -> Self {
-        // TRADE_ACTION_REMOVE = 8
+        // TRADE_ACTION_REMOVE = 8 — bridge requires volume/type/price even though
+        // MT5 ignores them for remove actions; send minimal valid values.
         Self {
             action: 8,
             symbol: symbol.into(),
-            volume: None,
-            order_type: None,
-            price: None,
+            volume: Some(0.01),
+            order_type: Some(0),
+            price: Some(0.0),
             sl: None,
             tp: None,
             magic: None,
