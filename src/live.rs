@@ -246,9 +246,9 @@ async fn tick(
             }
             if let (Some(tg), Some(msg_id)) = (&cfg.telegram, state.tg_message_id) {
                 let text = format!(
-                    "⏱ <b>EXPIRED</b>\n{} {}\nEntry: {:.5}\nNo fill after {} candles",
-                    symbol, state.side, state.entry,
-                    cfg.fvg_expiry_candles,
+                    "⏱ <b>EXPIRED</b>\n{} · {}\n\nEntry <code>{}</code>\nUnfilled after {} candles",
+                    symbol, state.side,
+                    fp(state.entry), cfg.fvg_expiry_candles,
                 );
                 let _ = tg.edit(http, msg_id, &text).await;
             }
@@ -353,9 +353,9 @@ async fn tick(
     // send Telegram "Pending" message
     let tg_msg_id = if let Some(tg) = &cfg.telegram {
         let text = format!(
-            "🟡 <b>PENDING</b>\n{} {}\nEntry: {}\nSL: {}   TP: {}\nVol: {} lot   RR: {:.1}",
+            "🟡 <b>PENDING</b>\n{} · {}\n\nEntry  <code>{}</code>\nTP     <code>{}</code>\nSL     <code>{}</code>\nVol {} lot  ·  RR 1:{:.1}",
             symbol, side_str,
-            fmt_price(fvg.entry, prec), fmt_price(sl, prec), fmt_price(tp, prec),
+            fmt_price(fvg.entry, prec), fmt_price(tp, prec), fmt_price(sl, prec),
             volume, rr,
         );
         match tg.send(http, &text).await {
@@ -493,8 +493,9 @@ async fn on_position_opened(
 
     if let (Some(tg), Some(msg_id)) = (tg, tg_msg_id) {
         let text = format!(
-            "⚡ <b>FILLED</b>\n{} {}\nEntry: {:.5}\nSL: {:.5}   TP: {:.5}\nVol: {:.2} lot",
-            symbol, ps.side, entry, sl, tp, volume,
+            "⚡ <b>FILLED</b>\n{} · {}\n\nEntry  <code>{}</code>\nTP     <code>{}</code>\nSL     <code>{}</code>\nVol {:.2} lot",
+            symbol, ps.side,
+            fp(entry), fp(tp), fp(sl), volume,
         );
         let _ = tg.edit(http, msg_id, &text).await;
     }
@@ -516,7 +517,7 @@ async fn on_position_closed(
     let Some(tg) = tg else { return };
     let Some(msg_id) = ps.as_ref().and_then(|s| s.tg_message_id) else { return };
 
-    let (icon, label) = if profit >= 0.0 { ("✅", "TP HIT") } else { ("❌", "SL HIT") };
+    let (icon, label) = if profit >= 0.0 { ("✅", "TAKE PROFIT") } else { ("❌", "STOP LOSS") };
     let exit     = payload.price_current.unwrap_or(0.0);
     let entry    = ps.as_ref().map(|s| s.entry).unwrap_or(payload.price_open.unwrap_or(0.0));
     let volume   = payload.volume.unwrap_or(ps.as_ref().map(|s| s.volume).unwrap_or(0.0));
@@ -525,11 +526,11 @@ async fn on_position_closed(
     let acct_bal = mt5.account().await.ok().map(|a| a.balance).unwrap_or(Decimal::ZERO);
 
     let text = format!(
-        "{} <b>{} {:+.2}</b>\n{} {}\n{:.5} → {:.5}\nVol: {:.2} lot\nBal: ${}",
+        "{} <b>{}  {:+.2}</b>\n{} · {}\n\n<code>{}</code> → <code>{}</code>\nVol {:.2} lot  ·  Bal ${:.2}",
         icon, label, profit,
         symbol, side_str,
-        entry, exit,
-        volume, acct_bal,
+        fp(entry), fp(exit),
+        volume, d2f(acct_bal),
     );
     let _ = tg.edit(http, msg_id, &text).await;
 }
@@ -550,8 +551,9 @@ async fn on_position_modified(
 
         if let (Some(tg), Some(msg_id)) = (tg, ps.tg_message_id) {
             let text = format!(
-                "🔄 <b>MODIFIED</b>\n{} {}\nEntry: {:.5}\nSL: {:.5}   TP: {:.5}\nVol: {:.2} lot",
-                symbol, ps.side, ps.entry, ps.sl, ps.tp, ps.volume,
+                "🔄 <b>MODIFIED</b>\n{} · {}\n\nEntry  <code>{}</code>\nTP     <code>{}</code>\nSL     <code>{}</code>\nVol {:.2} lot",
+                symbol, ps.side,
+                fp(ps.entry), fp(ps.tp), fp(ps.sl), ps.volume,
             );
             let _ = tg.edit(http, msg_id, &text).await;
         }
@@ -573,8 +575,8 @@ async fn on_order_cancelled(
         let side_str = state.as_ref().map(|s| s.side.as_str()).unwrap_or("?");
         let entry    = state.as_ref().map(|s| s.entry).unwrap_or(0.0);
         let text = format!(
-            "🚫 <b>CANCELLED</b>\n{} {}\nEntry: {:.5}",
-            symbol, side_str, entry,
+            "🚫 <b>CANCELLED</b>\n{} · {}\n\nEntry <code>{}</code>",
+            symbol, side_str, fp(entry),
         );
         let _ = tg.edit(http, msg_id, &text).await;
     }
@@ -598,8 +600,9 @@ async fn on_order_modified(
 
         if let (Some(tg), Some(msg_id)) = (tg, state.tg_message_id) {
             let text = format!(
-                "🔄 <b>ORDER MODIFIED</b>\n{} {}\nEntry: {:.5}\nSL: {:.5}   TP: {:.5}",
-                symbol, state.side, state.entry, state.sl, state.tp,
+                "🔄 <b>ORDER MODIFIED</b>\n{} · {}\n\nEntry  <code>{}</code>\nTP     <code>{}</code>\nSL     <code>{}</code>",
+                symbol, state.side,
+                fp(state.entry), fp(state.tp), fp(state.sl),
             );
             let _ = tg.edit(http, msg_id, &text).await;
         }
@@ -624,27 +627,27 @@ async fn send_pnl_summary(
         mt5.history_deals(&epoch_str, &now_str, Some(symbol)),
     )?;
 
-    let summary_text = |label: &str, deals: &[domain::Deal]| {
+    let summary_text = |deals: &[domain::Deal]| {
         let closing: Vec<_> = deals.iter()
             .filter(|d| d.entry == 1 && d.magic == MAGIC)
             .collect();
         let total  = closing.len();
         let wins   = closing.iter().filter(|d| d.profit > Decimal::ZERO).count();
         let losses = total - wins;
-        let profit: Decimal = closing.iter().map(|d| d.profit + d.commission + d.swap).sum();
+        let net: Decimal = closing.iter().map(|d| d.profit + d.commission + d.swap).sum();
         let wr = if total > 0 { wins as f64 / total as f64 * 100.0 } else { 0.0 };
         format!(
-            "{}\nTrades: {} ({}W / {}L)   WR: {:.0}%\nProfit: ${:+.2}",
-            label, total, wins, losses, wr, profit,
+            "{} trades  ·  {}W {}L  ·  WR {:.0}%\nNet  <b>{:+.2}</b>",
+            total, wins, losses, wr, net,
         )
     };
 
     let today_date = now.format("%Y-%m-%d").to_string();
     let text = format!(
-        "📊 <b>Today</b> — {} {}\n{}\n\n📈 <b>All-time</b>\n{}",
+        "📊 <b>PnL Summary</b>\n\n<b>Today</b>  ·  {}  ·  {}\n{}\n\n<b>All-time</b>\n{}",
         symbol, today_date,
-        summary_text("", &today_deals),
-        summary_text("", &all_deals),
+        summary_text(&today_deals),
+        summary_text(&all_deals),
     );
 
     tg.send(http, &text).await?;
@@ -652,6 +655,12 @@ async fn send_pnl_summary(
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
+
+fn fp(v: f64) -> String {
+    let s = format!("{v:.5}");
+    let s = s.trim_end_matches('0');
+    s.trim_end_matches('.').to_string()
+}
 
 fn timeframe_minutes(tf: Timeframe) -> i64 {
     match tf {

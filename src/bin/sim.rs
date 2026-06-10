@@ -16,26 +16,30 @@ async fn main() -> Result<()> {
     let tg   = TelegramConfig { token, chat_id, thread_id };
     let http = Client::new();
 
-    // 1. Pending
-    tracing::info!("step 1: PENDING");
-    let msg_id = tg.send(&http,
-        "🟡 <b>PENDING</b>\nXAUUSDm Long\nEntry: 3325.50\nSL: 3320.00   TP: 3333.75\nVol: 0.03 lot   RR: 1.5",
+    // ── Flow: pending → filled → TP hit ──────────────────────────────────────
+    let msg = tg.send(&http,
+        "🟡 <b>PENDING</b>\nXAUUSDm · Long\n\nEntry  <code>3325.50</code>\nTP     <code>3333.75</code>\nSL     <code>3320.00</code>\nVol 0.03 lot  ·  RR 1:1.5"
     ).await?;
-    tracing::info!(msg_id, "sent");
+    tracing::info!(msg_id = msg, "PENDING sent");
     sleep(Duration::from_secs(3)).await;
 
-    // 2. Filled
-    tracing::info!("step 2: FILLED");
-    tg.edit(&http, msg_id,
-        "⚡ <b>FILLED</b>\nXAUUSDm Long\nEntry: 3325.50\nSL: 3320.00   TP: 3333.75\nVol: 0.03 lot",
+    tg.edit(&http, msg,
+        "⚡ <b>FILLED</b>\nXAUUSDm · Long\n\nEntry  <code>3325.50</code>\nTP     <code>3333.75</code>\nSL     <code>3320.00</code>\nVol 0.03 lot"
     ).await?;
+    tracing::info!(msg_id = msg, "FILLED edited");
     sleep(Duration::from_secs(3)).await;
 
-    // 3. Result
-    tracing::info!("step 3: TP HIT");
-    tg.edit(&http, msg_id,
-        "✅ <b>TP HIT +12.68</b>\nXAUUSDm Long\n3325.50 → 3333.75\nVol: 0.03 lot\nBal: $5012.68",
+    tg.edit(&http, msg,
+        "✅ <b>TAKE PROFIT  +12.68</b>\nXAUUSDm · Long\n\n<code>3325.50</code> → <code>3333.75</code>\nVol 0.03 lot  ·  Bal $5012.68"
     ).await?;
+    tracing::info!(msg_id = msg, "TP HIT edited");
+    sleep(Duration::from_secs(3)).await;
+
+    // ── PnL summary ───────────────────────────────────────────────────────────
+    tg.send(&http,
+        "📊 <b>PnL Summary</b>\n\n<b>Today</b>  ·  XAUUSDm  ·  2026-06-11\n2 trades  ·  1W 1L  ·  WR 50%\nNet  <b>+$5.18</b>\n\n<b>All-time</b>\n17 trades  ·  10W 7L  ·  WR 59%\nNet  <b>+$482.41</b>"
+    ).await?;
+    tracing::info!("PnL summary sent");
 
     println!("\nDone ✅  check Telegram");
     Ok(())
