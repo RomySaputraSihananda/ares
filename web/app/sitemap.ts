@@ -1,6 +1,6 @@
 import type { MetadataRoute } from "next";
 
-const BASE = "https://ares-six-peach.vercel.app";
+const BASE = "https://ares.romys.my.id";
 
 export default function sitemap(): MetadataRoute.Sitemap {
   return [

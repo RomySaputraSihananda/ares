@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 import Nav from "@/components/Nav";
 
-const SITE_URL = "https://ares-six-peach.vercel.app";
+const SITE_URL = "https://ares.romys.my.id";
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
