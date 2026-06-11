@@ -104,3 +104,35 @@ export async function getDeals(dateFrom: string, dateTo: string, symbol?: string
   const w = await apiFetch<DataVec<Deal>>(path);
   return w.data;
 }
+
+// Fetch all deals from startDate to now by querying one day at a time,
+// working around the MT5 bridge per-request deal limit.
+export async function getAllDeals(startDate: string): Promise<Deal[]> {
+  const start = new Date(startDate);
+  const now   = new Date();
+  const days: Array<[string, string]> = [];
+
+  const cur = new Date(start);
+  while (cur <= now) {
+    const next = new Date(cur);
+    next.setUTCDate(next.getUTCDate() + 1);
+    days.push([
+      cur.toISOString().slice(0, 19),
+      next.toISOString().slice(0, 19),
+    ]);
+    cur.setUTCDate(cur.getUTCDate() + 1);
+  }
+
+  const chunks = await Promise.all(days.map(([f, t]) => getDeals(f, t)));
+  const seen   = new Set<number>();
+  const result: Deal[] = [];
+  for (const chunk of chunks) {
+    for (const deal of chunk) {
+      if (!seen.has(deal.ticket)) {
+        seen.add(deal.ticket);
+        result.push(deal);
+      }
+    }
+  }
+  return result;
+}
