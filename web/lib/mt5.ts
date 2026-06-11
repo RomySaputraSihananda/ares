@@ -107,8 +107,11 @@ export async function getDeals(dateFrom: string, dateTo: string, symbol?: string
 
 // Fetch all deals from startDate to now by querying one day at a time,
 // working around the MT5 bridge per-request deal limit.
-export async function getAllDeals(startDate: string): Promise<Deal[]> {
-  const start = new Date(startDate);
+// startDate defaults to 90 days ago if omitted.
+export async function getAllDeals(startDate?: string): Promise<Deal[]> {
+  const start = startDate
+    ? new Date(startDate)
+    : (() => { const d = new Date(); d.setUTCDate(d.getUTCDate() - 90); return d; })();
   const now   = new Date();
   const days: Array<[string, string]> = [];
 

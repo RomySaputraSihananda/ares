@@ -1,21 +1,22 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import Nav from "@/components/Nav";
+import { getLatestVersion, GITHUB_URL } from "@/lib/github";
 
 const SITE_URL = "https://ares.romys.my.id";
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
   title: {
-    default: "ARES — Automated Gold Trading Bot",
+    default: "ARES — Algorithmic Trading Bot",
     template: "%s · ARES",
   },
   description:
-    "Live forward-test results for ARES, an M5 Momentum FVG scalper built in Rust. Trades XAUUSDm with EMA-20 trend filter and automated risk management.",
+    "Open-source algorithmic trading bot built in Rust. Momentum FVG scalper with EMA trend filter, automated risk management, and live forward-test results.",
   keywords: [
-    "algorithmic trading", "gold trading bot", "XAUUSD EA",
+    "algorithmic trading", "trading bot", "open source", "XAUUSD",
     "MT5 expert advisor", "Rust trading bot", "FVG scalper",
-    "forex robot", "automated trading", "ICT strategy",
+    "forex robot", "automated trading", "momentum strategy",
   ],
   authors: [{ name: "Romy Saputra Sihananda" }],
   creator: "Romy Saputra Sihananda",
@@ -28,14 +29,14 @@ export const metadata: Metadata = {
     type: "website",
     url: SITE_URL,
     siteName: "ARES Trading Bot",
-    title: "ARES — Automated Gold Trading Bot",
-    description: "Live forward-test · M5 Momentum FVG scalper · XAUUSDm · Built in Rust",
+    title: "ARES — Algorithmic Trading Bot",
+    description: "Open-source Momentum FVG scalper built in Rust · Live forward-test · MT5",
     locale: "en_US",
   },
   twitter: {
     card: "summary_large_image",
-    title: "ARES — Automated Gold Trading Bot",
-    description: "Live forward-test · M5 Momentum FVG scalper · XAUUSDm · Built in Rust",
+    title: "ARES — Algorithmic Trading Bot",
+    description: "Open-source Momentum FVG scalper built in Rust · Live forward-test · MT5",
   },
   icons: {
     icon: "/favicon.svg",
@@ -46,11 +47,13 @@ export const metadata: Metadata = {
   },
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  const version = await getLatestVersion();
+
   return (
     <html lang="en">
       <body className="min-h-screen antialiased">
-        <Nav />
+        <Nav version={version} />
         <main className="max-w-5xl mx-auto px-4 sm:px-6 py-12">
           {children}
         </main>
@@ -64,10 +67,26 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                   <path d="M10.2 15.5 H15.8" stroke="white" strokeWidth="1.8" strokeLinecap="round"/>
                 </svg>
                 <span className="font-mono text-sm font-semibold" style={{ letterSpacing: "0.18em", color: "var(--c-ink)" }}>ARES</span>
+                {version && (
+                  <span className="text-[10px] font-mono text-ink-ter bg-s2 border border-hl px-1.5 py-0.5 rounded">
+                    {version}
+                  </span>
+                )}
               </div>
-              <p className="text-sm leading-relaxed" style={{ color: "var(--c-ink-sub)" }}>
-                M5 Momentum FVG Scalper<br />Built in Rust · XAUUSDm
+              <p className="text-sm leading-relaxed mb-3" style={{ color: "var(--c-ink-sub)" }}>
+                Open-source algorithmic trading bot<br />built in Rust · M5 Momentum FVG
               </p>
+              <a
+                href={GITHUB_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 text-xs text-ink-sub hover:text-ink transition-colors"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/>
+                </svg>
+                View on GitHub
+              </a>
             </div>
             <div>
               <p className="eyebrow mb-4">Navigation</p>
@@ -75,6 +94,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 <li><a href="/"         className="hover:text-ink transition-colors">Dashboard</a></li>
                 <li><a href="/trades"   className="hover:text-ink transition-colors">Trades</a></li>
                 <li><a href="/backtest" className="hover:text-ink transition-colors">Backtest</a></li>
+                <li>
+                  <a href={GITHUB_URL} target="_blank" rel="noopener noreferrer" className="hover:text-ink transition-colors">
+                    GitHub ↗
+                  </a>
+                </li>
               </ul>
             </div>
             <div>

@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Timelike, Utc};
 use domain::{Side, Timeframe};
 use futures_util::StreamExt;
 use rust_decimal::Decimal;
@@ -33,9 +33,14 @@ pub struct LiveConfig {
     pub slippage_points:    Decimal,
     pub spread_override:    Option<Decimal>,
     pub ema_period:         usize,
-    pub poll_secs:          u64,
-    pub mt5_base_url:       String,
-    pub telegram:           Option<TelegramConfig>,
+    pub poll_secs:            u64,
+    pub mt5_base_url:         String,
+    pub telegram:             Option<TelegramConfig>,
+    // ── optimisations ────────────────────────────────────────────────────────
+    pub session_from_utc:     Option<u32>,
+    pub session_to_utc:       Option<u32>,
+    pub breakeven_at_rr:      Decimal,
+    pub daily_loss_limit_pct: Decimal,
 }
 
 // ── pending order state ───────────────────────────────────────────────────────
@@ -78,6 +83,8 @@ struct PosState {
     sl:            f64,
     tp:            f64,
     volume:        f64,
+    #[serde(default)]
+    be_set:        bool,
 }
 
 impl PosState {
@@ -169,6 +176,27 @@ pub async fn run(mt5: &mt5_client::Mt5Client, cfg: &LiveConfig) -> Result<()> {
     }
 
     let http = reqwest::Client::new();
+
+    // startup notification
+    if let Some(tg) = &cfg.telegram {
+        let bal = mt5.account().await.ok()
+            .map(|a| d2f(a.balance))
+            .unwrap_or(0.0);
+        let session_str = match (cfg.session_from_utc, cfg.session_to_utc) {
+            (Some(f), Some(t)) => format!("{f:02}:00–{t:02}:00 UTC"),
+            _ => "All hours".to_string(),
+        };
+        let text = format!(
+            "🤖 <b>ARES Started</b>\n{} · {:?}\n\nSession  <code>{}</code>\nRisk     <code>{:.1}%</code>\nEMA      <code>{}</code>\nBalance  <code>${:.2}</code>",
+            cfg.symbol, cfg.timeframe,
+            session_str,
+            d2f(cfg.risk_pct) * 100.0,
+            cfg.ema_period,
+            bal,
+        );
+        let _ = tg.send(&http, &text).await;
+    }
+
     let mut ticker = interval(Duration::from_secs(cfg.poll_secs));
 
     loop {
@@ -209,21 +237,67 @@ async fn tick(
 
     if has_position {
         // ensure PosState exists so SSE task can find it on close
-        if PosState::load(symbol).is_none() {
-            if let Some(pos) = positions.iter().find(|p| p.symbol == *symbol && p.magic == MAGIC) {
-                let tg_msg_id = State::load(symbol).and_then(|s| s.tg_message_id);
-                let ps = PosState {
-                    ticket:        pos.ticket,
-                    tg_message_id: tg_msg_id,
-                    side:          format!("{:?}", pos.side),
-                    entry:         d2f(pos.price_open),
-                    sl:            d2f(pos.sl),
-                    tp:            d2f(pos.tp),
-                    volume:        d2f(pos.volume),
-                };
-                let _ = ps.save(symbol);
+        let mut ps = if let Some(existing) = PosState::load(symbol) {
+            existing
+        } else if let Some(pos) = positions.iter().find(|p| p.symbol == *symbol && p.magic == MAGIC) {
+            let tg_msg_id = State::load(symbol).and_then(|s| s.tg_message_id);
+            let ps = PosState {
+                ticket:        pos.ticket,
+                tg_message_id: tg_msg_id,
+                side:          format!("{:?}", pos.side),
+                entry:         d2f(pos.price_open),
+                sl:            d2f(pos.sl),
+                tp:            d2f(pos.tp),
+                volume:        d2f(pos.volume),
+                be_set:        false,
+            };
+            let _ = ps.save(symbol);
+            ps
+        } else {
+            tracing::debug!(%symbol, "position open — skip");
+            return Ok(());
+        };
+
+        // ── breakeven SL management ───────────────────────────────────────────
+        if !ps.be_set && cfg.breakeven_at_rr > Decimal::ZERO {
+            if let Some(pos) = positions.iter().find(|p| p.ticket == ps.ticket) {
+                let entry    = Decimal::try_from(ps.entry).unwrap_or_default();
+                let sl       = Decimal::try_from(ps.sl).unwrap_or_default();
+                let sl_dist  = (entry - sl).abs();
+                if sl_dist > Decimal::ZERO {
+                    let be_trigger = match pos.side {
+                        domain::Side::Long  => entry + sl_dist * cfg.breakeven_at_rr,
+                        domain::Side::Short => entry - sl_dist * cfg.breakeven_at_rr,
+                    };
+                    let reached = match pos.side {
+                        domain::Side::Long  => pos.price_current >= be_trigger,
+                        domain::Side::Short => pos.price_current <= be_trigger,
+                    };
+                    if reached {
+                        let new_sl = ps.entry; // move SL to entry
+                        match mt5.modify_position(pos.ticket, symbol, new_sl, ps.tp).await {
+                            Ok(r) if r.retcode == 10009 => {
+                                tracing::info!(%symbol, ticket = pos.ticket, "breakeven SL set");
+                                ps.sl     = new_sl;
+                                ps.be_set = true;
+                                let _ = ps.save(symbol);
+                                if let (Some(tg), Some(msg_id)) = (&cfg.telegram, ps.tg_message_id) {
+                                    let text = format!(
+                                        "🔒 <b>BREAKEVEN</b>\n{} · {}\n\nSL moved to entry <code>{}</code>\nTP <code>{}</code>",
+                                        symbol, ps.side,
+                                        fp(ps.entry), fp(ps.tp),
+                                    );
+                                    let _ = tg.edit(http, msg_id, &text).await;
+                                }
+                            }
+                            Ok(r)  => tracing::warn!(retcode = r.retcode, "breakeven modify retcode unexpected"),
+                            Err(e) => tracing::warn!("breakeven modify failed: {e:#}"),
+                        }
+                    }
+                }
             }
         }
+
         tracing::debug!(%symbol, "position open — skip");
         return Ok(());
     }
@@ -260,7 +334,36 @@ async fn tick(
         return Ok(());
     }
 
-    // ── 3. fetch candles ──────────────────────────────────────────────────────
+    // ── 3. session filter ─────────────────────────────────────────────────────
+    if let (Some(from), Some(to)) = (cfg.session_from_utc, cfg.session_to_utc) {
+        let hour = Utc::now().time().hour();
+        if hour < from || hour >= to {
+            tracing::debug!(%symbol, hour, from, to, "outside session window — skip");
+            return Ok(());
+        }
+    }
+
+    // ── 4. daily loss limit ───────────────────────────────────────────────────
+    if cfg.daily_loss_limit_pct > Decimal::ZERO {
+        let now       = Utc::now();
+        let today_str = now.format("%Y-%m-%dT00:00:00").to_string();
+        let now_str   = now.format("%Y-%m-%dT%H:%M:%S").to_string();
+        if let Ok(today_deals) = mt5.history_deals(&today_str, &now_str, Some(symbol)).await {
+            let daily_pnl: Decimal = today_deals.iter()
+                .filter(|d| d.entry == 1 && d.magic == MAGIC)
+                .map(|d| d.profit + d.commission + d.swap)
+                .sum();
+            let acct      = mt5.account().await.context("fetch account for daily limit")?;
+            let balance   = Decimal::try_from(acct.balance).context("balance")?;
+            let limit     = -(balance * cfg.daily_loss_limit_pct);
+            if daily_pnl <= limit {
+                tracing::info!(%symbol, %daily_pnl, %limit, "daily loss limit hit — no new trades today");
+                return Ok(());
+            }
+        }
+    }
+
+    // ── 5. fetch candles ──────────────────────────────────────────────────────
     let candles = mt5
         .rates_from_pos(symbol, cfg.timeframe, 0, CANDLE_FETCH)
         .await
@@ -273,7 +376,7 @@ async fn tick(
     let impulse = &candles[n - 3];
     let post    = &candles[n - 2];
 
-    // ── 4. EMA filter ─────────────────────────────────────────────────────────
+    // ── 6. EMA filter ─────────────────────────────────────────────────────────
     let ema_val: Option<Decimal> = if cfg.ema_period > 0 && candles.len() >= cfg.ema_period {
         let closes: Vec<Decimal> = candles.iter().map(|c| c.close).collect();
         rolling_ema(&closes, cfg.ema_period)[n - 2]
@@ -281,7 +384,7 @@ async fn tick(
         Some(Decimal::ZERO)
     };
 
-    // ── 5. detect FVG ─────────────────────────────────────────────────────────
+    // ── 7. detect FVG ─────────────────────────────────────────────────────────
     let fvg = match detector::detect(
         pre, impulse, post,
         cfg.body_pct_min, cfg.close_pct_min, min_zone,
@@ -300,7 +403,7 @@ async fn tick(
     };
     if !ema_ok { return Ok(()); }
 
-    // ── 6. SL / TP ────────────────────────────────────────────────────────────
+    // ── 8. SL / TP ────────────────────────────────────────────────────────────
     let sl = match fvg.side {
         Side::Long  => fvg.impulse_sl - cfg.sl_buffer,
         Side::Short => fvg.impulse_sl + cfg.sl_buffer,
@@ -312,7 +415,7 @@ async fn tick(
         Side::Short => fvg.entry - sl_dist * cfg.min_rr,
     };
 
-    // ── 7. position size ──────────────────────────────────────────────────────
+    // ── 9. position size ──────────────────────────────────────────────────────
     let acct    = mt5.account().await.context("fetch account")?;
     let balance = Decimal::try_from(acct.balance).context("balance")?;
     let value_per_lot = if profit_is_usd || post.close == Decimal::ZERO {
@@ -328,7 +431,7 @@ async fn tick(
         None    => return Ok(()),
     };
 
-    // ── 8. place order ────────────────────────────────────────────────────────
+    // ── 10. place order ───────────────────────────────────────────────────────
     let req = mt5_client::TradeRequest::limit(
         fvg.side, symbol.clone(), d2f(volume), d2f(fvg.entry), d2f(sl), d2f(tp),
         MAGIC, format!("ares-{}", post.time.format("%m%d-%H%M")),
@@ -487,6 +590,7 @@ async fn on_position_opened(
         tg_message_id: tg_msg_id,
         side:          if kind == 0 { "Long".to_string() } else { "Short".to_string() },
         entry, sl, tp, volume,
+        be_set:        false,
     };
     let _ = ps.save(symbol);
     State::clear(symbol);

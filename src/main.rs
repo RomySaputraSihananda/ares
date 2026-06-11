@@ -78,18 +78,28 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // ── shared config ─────────────────────────────────────────────────────────
-    let risk_pct         = env_dec("RISK_PCT",          "0.01")?;
-    let body_pct_min     = env_dec("BODY_PCT_MIN",       "0.6")?;
-    let close_pct_min    = env_dec("CLOSE_PCT_MIN",      "0.8")?;
-    let fvg_expiry       = env_usize("FVG_EXPIRY_CANDLES", "10")?;
-    let min_fvg_pips     = env_dec("MIN_FVG_PIPS",       "3")?;
-    let min_sl_pips      = env_dec("MIN_SL_PIPS",        "5")?;
-    let sl_buffer        = env_dec("SL_BUFFER",          "0")?;
-    let min_rr           = env_dec("MIN_RR",             "1.5")?;
-    let commission       = env_dec("COMMISSION_PER_LOT", "0")?;
-    let slippage_points  = env_dec("SLIPPAGE_POINTS",    "5")?;
-    let spread_override  = env_spread_override()?;
-    let ema_period       = env_usize("EMA_PERIOD",       "20")?;
+    let risk_pct              = env_dec("RISK_PCT",              "0.01")?;
+    let body_pct_min          = env_dec("BODY_PCT_MIN",          "0.6")?;
+    let close_pct_min         = env_dec("CLOSE_PCT_MIN",         "0.8")?;
+    let fvg_expiry            = env_usize("FVG_EXPIRY_CANDLES",  "10")?;
+    let min_fvg_pips          = env_dec("MIN_FVG_PIPS",          "3")?;
+    let min_sl_pips           = env_dec("MIN_SL_PIPS",           "5")?;
+    let sl_buffer             = env_dec("SL_BUFFER",             "0")?;
+    let min_rr                = env_dec("MIN_RR",                "1.5")?;
+    let commission            = env_dec("COMMISSION_PER_LOT",    "0")?;
+    let slippage_points       = env_dec("SLIPPAGE_POINTS",       "5")?;
+    let spread_override       = env_spread_override()?;
+    let ema_period            = env_usize("EMA_PERIOD",          "20")?;
+    let breakeven_at_rr       = env_dec("BREAKEVEN_AT_RR",       "0")?;
+    let daily_loss_limit_pct  = env_dec("DAILY_LOSS_LIMIT_PCT",  "0")?;
+    let session_from_utc: Option<u32> = match std::env::var("SESSION_FROM_UTC") {
+        Ok(s) if !s.is_empty() => Some(s.parse().context("SESSION_FROM_UTC")?),
+        _ => None,
+    };
+    let session_to_utc: Option<u32> = match std::env::var("SESSION_TO_UTC") {
+        Ok(s) if !s.is_empty() => Some(s.parse().context("SESSION_TO_UTC")?),
+        _ => None,
+    };
 
     let mt5 = Arc::new(mt5_client::Mt5Client::new(mt5_base_url.clone()));
 
@@ -128,6 +138,10 @@ async fn main() -> anyhow::Result<()> {
             poll_secs,
             mt5_base_url: mt5_base_url.clone(),
             telegram,
+            session_from_utc,
+            session_to_utc,
+            breakeven_at_rr,
+            daily_loss_limit_pct,
         };
 
         let mut handles = Vec::new();
@@ -148,8 +162,8 @@ async fn main() -> anyhow::Result<()> {
     // ── backtest mode ─────────────────────────────────────────────────────────
     let cfg = backtest::BacktestConfig {
         timeframe,
-        candles:         env_u32("BACKTEST_CANDLES",  "50000")?,
-        balance:         env_dec("BACKTEST_BALANCE",  "600")?,
+        candles:              env_u32("BACKTEST_CANDLES",  "50000")?,
+        balance:              env_dec("BACKTEST_BALANCE",  "600")?,
         risk_pct,
         body_pct_min,
         close_pct_min,
@@ -158,15 +172,19 @@ async fn main() -> anyhow::Result<()> {
         min_sl_pips,
         sl_buffer,
         min_rr,
-        timeout_candles: env_usize("TIMEOUT_CANDLES", "0")?,
+        timeout_candles:      env_usize("TIMEOUT_CANDLES", "0")?,
         commission,
         slippage_points,
         spread_override,
         ema_period,
-        date_from:       env_date("DATE_FROM")?,
-        date_to:         env_date("DATE_TO")?,
-        stop_out_pct:    env_dec("STOP_OUT_PCT",      "0.0")?,
-        tf_str:          tf_str.clone(),
+        date_from:            env_date("DATE_FROM")?,
+        date_to:              env_date("DATE_TO")?,
+        stop_out_pct:         env_dec("STOP_OUT_PCT",      "0.0")?,
+        tf_str:               tf_str.clone(),
+        session_from_utc,
+        session_to_utc,
+        breakeven_at_rr,
+        daily_loss_limit_pct,
     };
 
     for symbol in &symbols {

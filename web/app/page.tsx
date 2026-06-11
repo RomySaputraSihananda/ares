@@ -11,8 +11,9 @@ export default function DashboardPage() {
           ARES Trading Bot
         </h1>
         <p className="text-[18px] text-ink-md leading-relaxed max-w-2xl mb-8">
-          M5 Momentum FVG scalper built in Rust. Targets Fair Value Gaps on XAUUSDm
-          with EMA-20 trend filter, automatic position sizing, and Telegram alerts.
+          Open-source algorithmic trading bot built in Rust. Momentum FVG scalper
+          with EMA trend filter, configurable session window, automatic position
+          sizing, and Telegram alerts — runs on any MT5 symbol.
         </p>
         <div className="flex gap-3 flex-wrap">
           <Link href="/trades"   className="btn-primary">View Trades</Link>

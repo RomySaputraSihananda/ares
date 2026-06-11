@@ -31,6 +31,9 @@ pub struct TradeRequest {
     /// Ticket number — required for TRADE_ACTION_REMOVE (cancel pending order)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub order: Option<u64>,
+    /// Position ticket — required for TRADE_ACTION_SLTP (modify SL/TP)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub position: Option<u64>,
     /// Allowed price deviation in points
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deviation: Option<u32>,
@@ -63,6 +66,25 @@ impl TradeRequest {
             magic: Some(magic),
             comment: Some(comment.into()),
             order: None,
+            position: None,
+            deviation: None,
+        }
+    }
+
+    pub fn modify_sltp(symbol: impl Into<String>, position: u64, sl: f64, tp: f64) -> Self {
+        // TRADE_ACTION_SLTP = 6
+        Self {
+            action: 6,
+            symbol: symbol.into(),
+            volume: None,
+            order_type: None,
+            price: None,
+            sl: Some(sl),
+            tp: Some(tp),
+            magic: None,
+            comment: None,
+            order: None,
+            position: Some(position),
             deviation: None,
         }
     }
@@ -81,6 +103,7 @@ impl TradeRequest {
             magic: None,
             comment: None,
             order: Some(ticket),
+            position: None,
             deviation: None,
         }
     }

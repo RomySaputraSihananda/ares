@@ -1,5 +1,5 @@
 use anyhow::Result;
-use chrono::NaiveDate;
+use chrono::{NaiveDate, Timelike};
 use domain::Side;
 use rust_decimal::Decimal;
 
@@ -10,26 +10,35 @@ use crate::helpers::{actual_entry, actual_exit, fmt_price, fmt_pnl, rolling_ema,
 
 #[derive(Debug, Clone)]
 pub struct BacktestConfig {
-    pub timeframe:        domain::Timeframe,
-    pub candles:          u32,
-    pub balance:          Decimal,
-    pub risk_pct:         Decimal,
-    pub body_pct_min:     Decimal,
-    pub close_pct_min:    Decimal,
-    pub fvg_expiry:       usize,
-    pub min_fvg_pips:     Decimal,
-    pub min_sl_pips:      Decimal,
-    pub sl_buffer:        Decimal,
-    pub min_rr:           Decimal,
-    pub timeout_candles:  usize,
-    pub commission:       Decimal,
-    pub slippage_points:  Decimal,
-    pub spread_override:  Option<Decimal>,
-    pub ema_period:       usize,
-    pub date_from:        Option<NaiveDate>,
-    pub date_to:          Option<NaiveDate>,
-    pub stop_out_pct:     Decimal,
-    pub tf_str:           String,
+    pub timeframe:            domain::Timeframe,
+    pub candles:              u32,
+    pub balance:              Decimal,
+    pub risk_pct:             Decimal,
+    pub body_pct_min:         Decimal,
+    pub close_pct_min:        Decimal,
+    pub fvg_expiry:           usize,
+    pub min_fvg_pips:         Decimal,
+    pub min_sl_pips:          Decimal,
+    pub sl_buffer:            Decimal,
+    pub min_rr:               Decimal,
+    pub timeout_candles:      usize,
+    pub commission:           Decimal,
+    pub slippage_points:      Decimal,
+    pub spread_override:      Option<Decimal>,
+    pub ema_period:           usize,
+    pub date_from:            Option<NaiveDate>,
+    pub date_to:              Option<NaiveDate>,
+    pub stop_out_pct:         Decimal,
+    pub tf_str:               String,
+    // ── new optimisations ────────────────────────────────────────────────────
+    /// UTC hour range [from, to) allowed for new entries. None = no filter.
+    pub session_from_utc:     Option<u32>,
+    pub session_to_utc:       Option<u32>,
+    /// Move SL to entry once price moves this many × SL-distance in our favour.
+    /// 0 = disabled.
+    pub breakeven_at_rr:      Decimal,
+    /// Stop trading today when realised PnL < -(balance × this). 0 = disabled.
+    pub daily_loss_limit_pct: Decimal,
 }
 
 // ── open trade ────────────────────────────────────────────────────────────────
@@ -43,6 +52,7 @@ struct OpenTrade {
     tp:              Decimal,
     volume:          Decimal,
     open_candle_idx: usize,
+    be_set:          bool,   // breakeven already applied
 }
 
 // ── entry point ───────────────────────────────────────────────────────────────
@@ -97,12 +107,44 @@ pub async fn run(mt5: &mt5_client::Mt5Client, symbol: &str, cfg: &BacktestConfig
     let mut max_consec     = 0u32;
     let mut cur_consec     = 0u32;
 
+    // ── daily loss tracking ───────────────────────────────────────────────────
+    let mut today_date = chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
+    let mut today_start_balance = balance;
+    let mut daily_halted = false;
+
     'outer: for i in 2..total {
         let candle = &candles[i];
         let date   = candle.time.date_naive();
+        let hour   = candle.time.time().hour();
+
+        // ── reset daily state on new day ──────────────────────────────────────
+        if date != today_date {
+            today_date          = date;
+            today_start_balance = balance;
+            daily_halted        = false;
+        }
 
         // ── manage open trade ────────────────────────────────────────────────
-        if let Some(ref t) = open_trade {
+        if let Some(ref mut t) = open_trade {
+            // breakeven: move SL to entry once price moves breakeven_at_rr × sl_dist
+            if !t.be_set && cfg.breakeven_at_rr > Decimal::ZERO {
+                let sl_dist    = (t.actual_entry - t.sl).abs();
+                let be_trigger = match t.side {
+                    Side::Long  => t.actual_entry + sl_dist * cfg.breakeven_at_rr,
+                    Side::Short => t.actual_entry - sl_dist * cfg.breakeven_at_rr,
+                };
+                let triggered = match t.side {
+                    Side::Long  => candle.high >= be_trigger,
+                    Side::Short => candle.low  <= be_trigger,
+                };
+                if triggered {
+                    t.sl    = t.actual_entry;
+                    t.be_set = true;
+                    tracing::debug!(%symbol, "breakeven SL set");
+                }
+            }
+
+            // timeout
             if cfg.timeout_candles > 0 && (i - t.open_candle_idx) >= cfg.timeout_candles {
                 let t           = open_trade.take().unwrap();
                 let exit_lvl    = candle.close;
@@ -132,6 +174,7 @@ pub async fn run(mt5: &mt5_client::Mt5Client, symbol: &str, cfg: &BacktestConfig
                 continue;
             }
 
+            // stop-out
             if cfg.stop_out_pct > Decimal::ZERO {
                 let worst_price = match t.side {
                     Side::Long  => candle.low,
@@ -204,8 +247,9 @@ pub async fn run(mt5: &mt5_client::Mt5Client, symbol: &str, cfg: &BacktestConfig
                     wins += 1; sum_wins += pnl; cur_consec = 0;
                 }
                 trades += 1; total_pnl += pnl; total_friction += friction;
+                let be_tag = if t.be_set { " [BE]" } else { "" };
                 println!(
-                    "[{} {}] {} {} entry={} sl={} tp={} vol={:.2} → {label} exit={} friction={} pnl={} bal={:.2}",
+                    "[{} {}] {} {} entry={} sl={} tp={} vol={:.2} → {label}{be_tag} exit={} friction={} pnl={} bal={:.2}",
                     t.open_time, cfg.tf_str, symbol,
                     if t.side == Side::Long { "LONG " } else { "SHORT" },
                     fmt_price(t.actual_entry, prec), fmt_price(t.sl, prec), fmt_price(t.tp, prec), t.volume,
@@ -218,6 +262,26 @@ pub async fn run(mt5: &mt5_client::Mt5Client, symbol: &str, cfg: &BacktestConfig
         // ── date filter ───────────────────────────────────────────────────────
         if cfg.date_from.is_some_and(|d| date < d) { continue; }
         if cfg.date_to.is_some_and(|d| date > d)   { continue; }
+
+        // ── daily loss limit ──────────────────────────────────────────────────
+        if daily_halted { continue; }
+        if cfg.daily_loss_limit_pct > Decimal::ZERO {
+            let daily_pnl = balance - today_start_balance;
+            let limit     = -(today_start_balance * cfg.daily_loss_limit_pct);
+            if daily_pnl <= limit {
+                daily_halted = true;
+                tracing::debug!(%symbol, %date, "daily loss limit hit — halting rest of day");
+                continue;
+            }
+        }
+
+        // ── session filter ────────────────────────────────────────────────────
+        if let (Some(from), Some(to)) = (cfg.session_from_utc, cfg.session_to_utc) {
+            if hour < from || hour >= to {
+                pending_fvg = None; // discard stale FVGs from outside session
+                continue;
+            }
+        }
 
         // ── expire stale FVG ──────────────────────────────────────────────────
         if pending_fvg.as_ref().is_some_and(|f| i >= f.expiry_idx) {
@@ -275,6 +339,7 @@ pub async fn run(mt5: &mt5_client::Mt5Client, symbol: &str, cfg: &BacktestConfig
                                 actual_entry:    ae,
                                 sl, tp, volume: v,
                                 open_candle_idx: i,
+                                be_set:          false,
                             });
                             pending_fvg = None;
                         }
@@ -323,11 +388,23 @@ pub async fn run(mt5: &mt5_client::Mt5Client, symbol: &str, cfg: &BacktestConfig
     let pf          = if sum_losses > Decimal::ZERO { sum_wins / sum_losses } else { Decimal::MAX };
     let ret_pct     = (balance - cfg.balance) / cfg.balance * Decimal::from(100u32);
 
+    let session_str = match (cfg.session_from_utc, cfg.session_to_utc) {
+        (Some(f), Some(t)) => format!("  session={}–{}UTC", f, t),
+        _ => String::new(),
+    };
+    let be_str = if cfg.breakeven_at_rr > Decimal::ZERO {
+        format!("  be@{}×RR", cfg.breakeven_at_rr)
+    } else { String::new() };
+    let dl_str = if cfg.daily_loss_limit_pct > Decimal::ZERO {
+        format!("  daily_loss_limit={}%", cfg.daily_loss_limit_pct * Decimal::from(100u32))
+    } else { String::new() };
+
     println!("─────────────────────────────────────────");
     println!("Ares Scalper: {} {} | {} candles", symbol, cfg.tf_str, total);
     let timeout_str = if cfg.timeout_candles > 0 { format!("  timeout={}c", cfg.timeout_candles) } else { String::new() };
-    println!("Strategy : Momentum FVG  body≥{}  close≥{}  expiry={}c  min_fvg={}pip  min_sl={}pip  min_rr={}{}",
-        cfg.body_pct_min, cfg.close_pct_min, cfg.fvg_expiry, cfg.min_fvg_pips, cfg.min_sl_pips, cfg.min_rr, timeout_str);
+    println!("Strategy : Momentum FVG  body≥{}  close≥{}  expiry={}c  min_fvg={}pip  min_sl={}pip  min_rr={}{}{}{}{}",
+        cfg.body_pct_min, cfg.close_pct_min, cfg.fvg_expiry, cfg.min_fvg_pips, cfg.min_sl_pips, cfg.min_rr,
+        timeout_str, session_str, be_str, dl_str);
     println!("Friction : spread={}  slip={}  commission/lot={}",
         fmt_price(spread_price, prec), fmt_price(slippage_price, prec), cfg.commission);
     println!("─────────────────────────────────────────");

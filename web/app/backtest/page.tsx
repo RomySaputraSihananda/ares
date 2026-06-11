@@ -3,22 +3,27 @@ import Link from "next/link";
 
 export const metadata: Metadata = {
   title: "Backtest Results",
-  description: "ARES backtest results: M5 Momentum FVG scalper on XAUUSDm. Best run: PF 1.42, +43.2% net return, −11.5% max drawdown.",
+  description: "ARES backtest results: M5 Momentum FVG scalper on XAUUSDm and BTCUSDm. London session filter, EMA-20 trend filter.",
 };
 
-const results = [
-  { period: "1 Month",   tf: "M5", risk: "1%", trades: 159, wr: 55.3, pf: 1.42, ret: 43.2,  dd: -11.5, highlight: true },
-  { period: "1 Month",   tf: "M5", risk: "5%", trades: 159, wr: 55.3, pf: 1.26, ret: 390,   dd: -156,  highlight: false },
-  { period: "1 Week",    tf: "M5", risk: "1%", trades: 34,  wr: 47.1, pf: 0.94, ret: -6.2,  dd: -8.1,  highlight: false },
-  { period: "Yesterday", tf: "M1", risk: "1%", trades: 36,  wr: 47.2, pf: 1.05, ret: 6.6,   dd: -51,   highlight: false },
-  { period: "Yesterday", tf: "M5", risk: "1%", trades: 3,   wr: 66.7, pf: null, ret: null,  dd: null,  highlight: false, note: "Too few trades" },
+const results: Array<{
+  symbol: string; period: string; tf: string; risk: string;
+  trades: number | null; wr: number; pf: number | null; ret: number | null; dd: number | null;
+  highlight: boolean; note?: string;
+}> = [
+  { symbol: "XAUUSDm", period: "1 Month",  tf: "M5", risk: "1%", trades: 159,  wr: 55.3, pf: 1.42, ret: 43.2, dd: -11.5, highlight: true },
+  { symbol: "XAUUSDm", period: "50k bars", tf: "M5", risk: "5%", trades: 1421, wr: 50.3, pf: 1.17, ret: null, dd: null,  highlight: false, note: "Session 08–13 UTC" },
+  { symbol: "BTCUSDm", period: "50k bars", tf: "M5", risk: "5%", trades: null, wr: 56.9, pf: 1.11, ret: null, dd: null,  highlight: false, note: "Session 08–13 UTC" },
+  { symbol: "XAUUSDm", period: "1 Month",  tf: "M5", risk: "5%", trades: 159, wr: 55.3, pf: 1.26, ret: 390,  dd: -156,  highlight: false },
+  { symbol: "XAUUSDm", period: "1 Week",   tf: "M5", risk: "1%", trades: 34,  wr: 47.1, pf: 0.94, ret: -6.2, dd: -8.1,  highlight: false },
 ];
 
 const params = [
   ["Timeframe",      "M5"],
-  ["Symbol",         "XAUUSDm"],
+  ["Symbols",        "XAUUSDm · BTCUSDm"],
+  ["Session",        "08:00–13:00 UTC"],
   ["EMA Period",     "20"],
-  ["Min FVG Pips",   "3"],
+  ["Min FVG Pips",   "1"],
   ["Min SL Pips",    "5"],
   ["Min RR",         "1.5×"],
   ["FVG Expiry",     "10 candles"],
@@ -36,6 +41,7 @@ export default function BacktestPage() {
         </h1>
         <p className="text-[15px] text-ink-sub max-w-xl">
           Historical simulation on real MT5 tick data. Includes spread costs, commission, and slippage.
+          London session filter (08–13 UTC) applied.
         </p>
       </section>
 
@@ -74,7 +80,7 @@ export default function BacktestPage() {
           <table className="data-table">
             <thead>
               <tr>
-                {["Period", "TF", "Risk", "Trades", "Win Rate", "Profit Factor", "Return", "Max DD", ""].map(h => (
+                {["Symbol", "Period", "TF", "Risk", "Trades", "Win Rate", "Profit Factor", "Return", "Max DD", ""].map(h => (
                   <th key={h}>{h}</th>
                 ))}
               </tr>
@@ -82,10 +88,11 @@ export default function BacktestPage() {
             <tbody>
               {results.map((r, i) => (
                 <tr key={i} className={r.highlight ? "bg-s2" : ""}>
+                  <td className="font-mono font-medium text-ink">{r.symbol}</td>
                   <td className="font-medium text-ink">{r.period}</td>
                   <td className="font-mono text-ink-sub">{r.tf}</td>
                   <td className="font-mono text-ink-sub">{r.risk}</td>
-                  <td className="font-mono text-ink-md">{r.trades}</td>
+                  <td className="font-mono text-ink-md">{r.trades ?? "—"}</td>
                   <td className="font-mono text-ink-md">{r.wr.toFixed(1)}%</td>
                   <td className="font-mono font-medium">
                     {r.pf != null

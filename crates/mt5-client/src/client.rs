@@ -97,6 +97,23 @@ impl Mt5Client {
         Ok(w.data)
     }
 
+    pub async fn modify_position(
+        &self,
+        ticket: u64,
+        symbol: &str,
+        sl: f64,
+        tp: f64,
+    ) -> Result<TradeResult, Mt5Error> {
+        let req = TradeRequest::modify_sltp(symbol, ticket, sl, tp);
+        #[derive(serde::Serialize)]
+        struct Body<'a> { request: &'a TradeRequest }
+        let url  = format!("{}/order/send", self.base_url);
+        let text = self.fetch_text(self.http.post(&url).json(&Body { request: &req })).await?;
+        tracing::debug!(endpoint = %url, ticket, "modify position ok");
+        let w: DataOne<TradeResult> = serde_json::from_str(&text)?;
+        Ok(w.data)
+    }
+
     pub async fn cancel_order(&self, ticket: u64, symbol: &str) -> Result<TradeResult, Mt5Error> {
         let req = TradeRequest::cancel(symbol, ticket);
         #[derive(serde::Serialize)]

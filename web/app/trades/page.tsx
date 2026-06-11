@@ -6,7 +6,7 @@ import TradesRefresher from "@/components/TradesRefresher";
 
 export const metadata: Metadata = {
   title: "Trade History",
-  description: "Live closed trades and equity curve for ARES — M5 Momentum FVG scalper on XAUUSDm.",
+  description: "Live closed trades and equity curve for ARES — M5 Momentum FVG scalper on XAUUSDm and BTCUSDm.",
 };
 
 export const dynamic = "force-dynamic";
@@ -20,7 +20,7 @@ export default async function TradesPage() {
   try {
     [account, deals] = await Promise.all([
       getAccount(),
-      getAllDeals("2026-06-10T00:00:00"),
+      getAllDeals(),
     ]);
   } catch { error = true; }
 
