@@ -1,4 +1,10 @@
+import type { Metadata } from "next";
 import Link from "next/link";
+
+export const metadata: Metadata = {
+  title: "Backtest Results",
+  description: "ARES backtest results: M5 Momentum FVG scalper on XAUUSDm. Best run: PF 1.42, +43.2% net return, −11.5% max drawdown.",
+};
 
 const results = [
   { period: "1 Month",   tf: "M5", risk: "1%", trades: 159, wr: 55.3, pf: 1.42, ret: 43.2,  dd: -11.5, highlight: true },

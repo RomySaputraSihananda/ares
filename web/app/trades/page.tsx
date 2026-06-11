@@ -1,7 +1,13 @@
+import type { Metadata } from "next";
 import { getAccount, getAllDeals, type Deal } from "@/lib/mt5";
 import { formatCurrency, formatDate } from "@/lib/format";
 import EquityChart from "@/components/EquityChart";
 import TradesRefresher from "@/components/TradesRefresher";
+
+export const metadata: Metadata = {
+  title: "Trade History",
+  description: "Live closed trades and equity curve for ARES — M5 Momentum FVG scalper on XAUUSDm.",
+};
 
 export const dynamic = "force-dynamic";
 const MAGIC = 19730;

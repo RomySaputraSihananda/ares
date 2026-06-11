@@ -14,9 +14,16 @@ export default function Nav() {
   return (
     <nav className="sticky top-0 z-50" style={{ backgroundColor: 'var(--c-canvas)', borderBottom: '1px solid var(--c-hl)' }}>
       <div className="max-w-5xl mx-auto px-4 sm:px-6 h-14 flex items-center gap-6">
-        {/* wordmark */}
-        <Link href="/" className="font-mono text-xs tracking-widest text-ink-sub uppercase hover:text-ink transition-colors">
-          ARES
+        {/* logo + wordmark */}
+        <Link href="/" className="flex items-center gap-2 group">
+          <svg width="26" height="26" viewBox="0 0 26 26" fill="none" aria-hidden="true">
+            <rect width="26" height="26" rx="6" fill="#5e6ad2"/>
+            <path d="M8 19 L13 8 L18 19" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+            <path d="M10.2 15.5 H15.8" stroke="white" strokeWidth="1.8" strokeLinecap="round"/>
+          </svg>
+          <span className="font-mono text-sm font-semibold tracking-widest text-ink group-hover:text-accent transition-colors" style={{ letterSpacing: '0.18em' }}>
+            ARES
+          </span>
         </Link>
 
         {/* nav links */}
