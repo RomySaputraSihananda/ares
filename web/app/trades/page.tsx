@@ -15,7 +15,7 @@ export default async function TradesPage() {
     const now = new Date().toISOString().slice(0, 19);
     [account, deals] = await Promise.all([
       getAccount(),
-      getDeals("2025-01-01T00:00:00", now),
+      getDeals("2026-06-01T00:00:00", now),
     ]);
   } catch { error = true; }
 

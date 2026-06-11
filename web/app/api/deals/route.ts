@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
   const { searchParams } = req.nextUrl;
-  const dateFrom = searchParams.get("date_from") ?? "2025-01-01T00:00:00";
+  const dateFrom = searchParams.get("date_from") ?? "2026-06-01T00:00:00";
   const dateTo   = searchParams.get("date_to")   ?? new Date().toISOString().slice(0, 19);
   const symbol   = searchParams.get("symbol") ?? undefined;
   try {
