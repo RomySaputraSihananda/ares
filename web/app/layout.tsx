@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import Nav from "@/components/Nav";
+import AresLogo from "@/components/AresLogo";
 import { getLatestVersion, GITHUB_URL } from "@/lib/github";
 
 const SITE_URL = "https://ares.romys.my.id";
@@ -62,11 +63,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
           <div className="max-w-5xl mx-auto px-6 py-16 grid grid-cols-1 sm:grid-cols-3 gap-10">
             <div>
               <div className="flex items-center gap-2 mb-3">
-                <svg width="22" height="22" viewBox="0 0 26 26" fill="none" aria-hidden="true">
-                  <rect width="26" height="26" rx="6" fill="#5e6ad2"/>
-                  <path d="M8 19 L13 8 L18 19" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
-                  <path d="M10.2 15.5 H15.8" stroke="white" strokeWidth="1.8" strokeLinecap="round"/>
-                </svg>
+                <AresLogo size={24} />
                 <span className="font-mono text-sm font-semibold" style={{ letterSpacing: "0.18em", color: "var(--c-ink)" }}>ARES</span>
                 {version && (
                   <span className="text-[10px] font-mono text-ink-ter bg-s2 border border-hl px-1.5 py-0.5 rounded">

@@ -1,5 +1,22 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" fill="none">
-  <rect width="32" height="32" rx="8" fill="#5e6ad2"/>
-  <path d="M9 23 L16 9 L23 23" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M11.8 18.5 H20.2" stroke="white" stroke-width="2.2" stroke-linecap="round"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="120 70 260 270">
+  <defs>
+    <linearGradient id="fav-left" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#5e6ad2" />
+      <stop offset="100%" stop-color="#3d4aaa" />
+    </linearGradient>
+    <linearGradient id="fav-right" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#828fff" />
+      <stop offset="100%" stop-color="#5e6ad2" />
+    </linearGradient>
+    <linearGradient id="fav-center" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#c4c8f8" />
+      <stop offset="100%" stop-color="#828fff" />
+    </linearGradient>
+  </defs>
+  <g transform="translate(100, 80)">
+    <path d="M 150 0 L 30 240 L 90 320 L 150 140 Z" fill="url(#fav-left)" />
+    <path d="M 150 0 L 270 240 L 210 320 L 150 140 Z" fill="url(#fav-right)" />
+    <path d="M 150 40 L 110 140 L 150 120 L 190 140 Z" fill="url(#fav-center)" />
+    <path d="M 95 210 L 205 210 L 150 140 Z" fill="#000000" opacity="0.25" />
+  </g>
 </svg>
