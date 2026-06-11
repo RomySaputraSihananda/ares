@@ -1,9 +1,13 @@
 // Server-side only — bridge URL never leaves this file
 
 async function apiFetch<T>(path: string): Promise<T> {
-  const base = process.env.MT5_BASE_URL ?? "http://localhost:8000";
+  const base    = process.env.MT5_BASE_URL    ?? "http://localhost:8000";
+  const apiKey  = process.env.MT5_API_KEY;
+  const headers: Record<string, string> = {};
+  if (apiKey) headers["X-API-Key"] = apiKey;
   const res = await fetch(`${base}${path}`, {
-    next: { revalidate: 0 }, // always fresh
+    headers,
+    next: { revalidate: 0 },
   });
   if (!res.ok) throw new Error(`MT5 bridge ${path} → ${res.status}`);
   return res.json();
