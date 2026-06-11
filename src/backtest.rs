@@ -4,7 +4,7 @@ use domain::Side;
 use rust_decimal::Decimal;
 
 use crate::detector;
-use crate::helpers::{actual_entry, actual_exit, fmt_price, fmt_pnl, rolling_ema, size_position};
+use crate::helpers::{actual_entry, actual_exit, fmt_price, fmt_pnl, rolling_atr, rolling_ema, size_position};
 
 // ── config ────────────────────────────────────────────────────────────────────
 
@@ -39,6 +39,18 @@ pub struct BacktestConfig {
     pub breakeven_at_rr:      Decimal,
     /// Stop trading today when realised PnL < -(balance × this). 0 = disabled.
     pub daily_loss_limit_pct: Decimal,
+    /// Close this fraction of position at TP1 then run remainder to TP2. 0 = disabled.
+    pub partial_close_pct:    Decimal,
+    /// RR multiple for TP2 (only used when partial_close_pct > 0).
+    pub tp2_rr:               Decimal,
+    /// Cancel pending FVG if price closes beyond impulse SL before fill.
+    pub pre_fill_invalidate:  bool,
+    /// Min FVG zone width as multiple of ATR(14). 0 = disabled.
+    pub min_fvg_atr_ratio:    Decimal,
+    /// Min impulse candle body as multiple of ATR(14). 0 = disabled.
+    pub min_impulse_atr_ratio: Decimal,
+    /// Entry position within FVG zone: 0.0 = zone edge (aggressive), 0.5 = midpoint, 1.0 = far edge (conservative).
+    pub entry_zone_pct:       Decimal,
 }
 
 // ── open trade ────────────────────────────────────────────────────────────────
@@ -50,9 +62,13 @@ struct OpenTrade {
     actual_entry:    Decimal,
     sl:              Decimal,
     tp:              Decimal,
+    tp2:             Decimal,
     volume:          Decimal,
+    volume_initial:  Decimal,
     open_candle_idx: usize,
-    be_set:          bool,   // breakeven already applied
+    be_set:          bool,
+    partial_done:    bool,
+    partial_pnl:     Decimal,
 }
 
 // ── entry point ───────────────────────────────────────────────────────────────
@@ -83,6 +99,7 @@ pub async fn run(mt5: &mt5_client::Mt5Client, symbol: &str, cfg: &BacktestConfig
     } else {
         vec![None; total]
     };
+    let atr_vals: Vec<Option<Decimal>> = rolling_atr(&candles, 14);
 
     tracing::info!(total, %symbol, "starting walk-forward");
 
@@ -141,6 +158,51 @@ pub async fn run(mt5: &mt5_client::Mt5Client, symbol: &str, cfg: &BacktestConfig
                     t.sl    = t.actual_entry;
                     t.be_set = true;
                     tracing::debug!(%symbol, "breakeven SL set");
+                }
+            }
+
+            // partial TP1: close fraction, move SL to BE, let remainder run to TP2
+            if !t.partial_done && cfg.partial_close_pct > Decimal::ZERO && t.tp2 > Decimal::ZERO {
+                let sl_now  = match t.side { Side::Long => candle.low  <= t.sl, Side::Short => candle.high >= t.sl };
+                let tp1_now = match t.side { Side::Long => candle.high >= t.tp, Side::Short => candle.low  <= t.tp };
+                if !sl_now && tp1_now {
+                    let step      = sym_info.volume_step;
+                    let close_vol = ((t.volume_initial * cfg.partial_close_pct) / step).floor() * step;
+                    let close_vol = close_vol.max(sym_info.volume_min).min(t.volume);
+                    let p_exit    = actual_exit(t.side, t.tp, false, spread_price, slippage_price);
+                    let commission_p = cfg.commission * close_vol;
+                    let pr = if profit_is_usd || p_exit <= Decimal::ZERO { Decimal::ONE } else { Decimal::ONE / p_exit };
+                    let ppnl = (match t.side {
+                        Side::Long  => (p_exit - t.actual_entry) * close_vol * contract_size,
+                        Side::Short => (t.actual_entry - p_exit) * close_vol * contract_size,
+                    }) * pr - commission_p;
+                    let fl_r = if profit_is_usd || t.tp <= Decimal::ZERO { Decimal::ONE } else { Decimal::ONE / t.tp };
+                    let fl_p = (match t.side {
+                        Side::Long  => (t.tp - t.entry_level) * close_vol * contract_size,
+                        Side::Short => (t.entry_level - t.tp) * close_vol * contract_size,
+                    }) * fl_r;
+                    total_friction += fl_p - ppnl;
+                    balance += ppnl;
+                    if balance > peak { peak = balance; }
+                    let dd = balance - peak;
+                    if dd < max_drawdown { max_drawdown = dd; }
+                    t.partial_pnl  = ppnl;
+                    t.partial_done = true;
+                    t.sl           = t.actual_entry;
+                    t.be_set       = true;
+                    t.volume       = t.volume - close_vol;
+                    let old_tp     = t.tp;
+                    t.tp           = t.tp2;
+                    println!(
+                        "[{} {}] {} {} entry={} vol={:.2} → PARTIAL_TP {:.0}% exit={} pnl={} remain={:.2}lot → TP2={} bal={:.2}",
+                        t.open_time, cfg.tf_str, symbol,
+                        if t.side == Side::Long { "LONG " } else { "SHORT" },
+                        fmt_price(t.actual_entry, prec), t.volume_initial,
+                        cfg.partial_close_pct * Decimal::from(100u32),
+                        fmt_price(p_exit, prec), fmt_pnl(ppnl), t.volume,
+                        fmt_price(old_tp, prec), balance,
+                    );
+                    continue;
                 }
             }
 
@@ -239,14 +301,15 @@ pub async fn run(mt5: &mt5_client::Mt5Client, symbol: &str, cfg: &BacktestConfig
                 if balance > peak { peak = balance; }
                 let dd = balance - peak;
                 if dd < max_drawdown { max_drawdown = dd; }
-                if is_sl {
-                    losses += 1; sum_losses += pnl.abs();
+                let total_trade_pnl = t.partial_pnl + pnl;
+                if total_trade_pnl >= Decimal::ZERO {
+                    wins += 1; sum_wins += total_trade_pnl; cur_consec = 0;
+                } else {
+                    losses += 1; sum_losses += total_trade_pnl.abs();
                     cur_consec += 1;
                     if cur_consec > max_consec { max_consec = cur_consec; }
-                } else {
-                    wins += 1; sum_wins += pnl; cur_consec = 0;
                 }
-                trades += 1; total_pnl += pnl; total_friction += friction;
+                trades += 1; total_pnl += total_trade_pnl; total_friction += friction;
                 let be_tag = if t.be_set { " [BE]" } else { "" };
                 println!(
                     "[{} {}] {} {} entry={} sl={} tp={} vol={:.2} → {label}{be_tag} exit={} friction={} pnl={} bal={:.2}",
@@ -287,6 +350,17 @@ pub async fn run(mt5: &mt5_client::Mt5Client, symbol: &str, cfg: &BacktestConfig
         if pending_fvg.as_ref().is_some_and(|f| i >= f.expiry_idx) {
             missed_fills += 1;
             pending_fvg = None;
+        }
+
+        // ── pre-fill invalidation: cancel if price closes past impulse SL ─────
+        if cfg.pre_fill_invalidate {
+            if let Some(ref fvg) = pending_fvg {
+                let invalidated = match fvg.side {
+                    Side::Long  => candle.close < fvg.impulse_sl,
+                    Side::Short => candle.close > fvg.impulse_sl,
+                };
+                if invalidated { missed_fills += 1; pending_fvg = None; }
+            }
         }
 
         // ── try to fill pending FVG ───────────────────────────────────────────
@@ -331,15 +405,23 @@ pub async fn run(mt5: &mt5_client::Mt5Client, symbol: &str, cfg: &BacktestConfig
                     {
                         None    => { pending_fvg = None; continue; }
                         Some(v) => {
-                            let ae = actual_entry(fvg.side, fvg.entry, spread_price);
+                            let ae  = actual_entry(fvg.side, fvg.entry, spread_price);
+                            let tp2 = if cfg.partial_close_pct > Decimal::ZERO {
+                                match fvg.side {
+                                    Side::Long  => fvg.entry + sl_dist * cfg.tp2_rr,
+                                    Side::Short => fvg.entry - sl_dist * cfg.tp2_rr,
+                                }
+                            } else { Decimal::ZERO };
                             open_trade = Some(OpenTrade {
                                 open_time:       candle.time.format("%Y-%m-%d %H:%M").to_string(),
                                 side:            fvg.side,
                                 entry_level:     fvg.entry,
                                 actual_entry:    ae,
-                                sl, tp, volume: v,
+                                sl, tp, tp2, volume: v, volume_initial: v,
                                 open_candle_idx: i,
                                 be_set:          false,
+                                partial_done:    false,
+                                partial_pnl:     Decimal::ZERO,
                             });
                             pending_fvg = None;
                         }
@@ -352,10 +434,36 @@ pub async fn run(mt5: &mt5_client::Mt5Client, symbol: &str, cfg: &BacktestConfig
         }
 
         // ── detect new momentum FVG ───────────────────────────────────────────
-        pending_fvg = detector::detect(
+        let mut fvg = detector::detect(
             &candles[i - 2], &candles[i - 1], candle,
             cfg.body_pct_min, cfg.close_pct_min, min_zone_size, i, cfg.fvg_expiry,
         );
+
+        // ATR quality filters
+        if fvg.is_some() && (cfg.min_fvg_atr_ratio > Decimal::ZERO || cfg.min_impulse_atr_ratio > Decimal::ZERO) {
+            if let Some(atr) = atr_vals.get(i).copied().flatten() {
+                if let Some(ref f) = fvg {
+                    let zone_width   = f.zone_high - f.zone_low;
+                    let impulse      = &candles[i - 1];
+                    let impulse_body = (impulse.close - impulse.open).abs();
+                    let fvg_ok   = cfg.min_fvg_atr_ratio   == Decimal::ZERO || zone_width   >= atr * cfg.min_fvg_atr_ratio;
+                    let body_ok  = cfg.min_impulse_atr_ratio == Decimal::ZERO || impulse_body >= atr * cfg.min_impulse_atr_ratio;
+                    if !fvg_ok || !body_ok { fvg = None; }
+                }
+            }
+        }
+
+        // Entry zone adjustment (0.0 = zone edge aggressive, 0.5 = midpoint, 1.0 = far edge conservative)
+        if let Some(ref mut f) = fvg {
+            if cfg.entry_zone_pct != Decimal::from_str_exact("0.5").unwrap_or_default() {
+                f.entry = match f.side {
+                    Side::Long  => f.zone_high - (f.zone_high - f.zone_low) * cfg.entry_zone_pct,
+                    Side::Short => f.zone_low  + (f.zone_high - f.zone_low) * cfg.entry_zone_pct,
+                };
+            }
+        }
+
+        pending_fvg = fvg;
     }
 
     // ── end-of-data timeout ───────────────────────────────────────────────────
@@ -398,13 +506,16 @@ pub async fn run(mt5: &mt5_client::Mt5Client, symbol: &str, cfg: &BacktestConfig
     let dl_str = if cfg.daily_loss_limit_pct > Decimal::ZERO {
         format!("  daily_loss_limit={}%", cfg.daily_loss_limit_pct * Decimal::from(100u32))
     } else { String::new() };
+    let partial_str = if cfg.partial_close_pct > Decimal::ZERO {
+        format!("  partial={:.0}%@TP1+TP2@{}×RR", cfg.partial_close_pct * Decimal::from(100u32), cfg.tp2_rr)
+    } else { String::new() };
 
     println!("─────────────────────────────────────────");
     println!("Ares Scalper: {} {} | {} candles", symbol, cfg.tf_str, total);
     let timeout_str = if cfg.timeout_candles > 0 { format!("  timeout={}c", cfg.timeout_candles) } else { String::new() };
-    println!("Strategy : Momentum FVG  body≥{}  close≥{}  expiry={}c  min_fvg={}pip  min_sl={}pip  min_rr={}{}{}{}{}",
+    println!("Strategy : Momentum FVG  body≥{}  close≥{}  expiry={}c  min_fvg={}pip  min_sl={}pip  min_rr={}{}{}{}{}{}",
         cfg.body_pct_min, cfg.close_pct_min, cfg.fvg_expiry, cfg.min_fvg_pips, cfg.min_sl_pips, cfg.min_rr,
-        timeout_str, session_str, be_str, dl_str);
+        timeout_str, session_str, be_str, dl_str, partial_str);
     println!("Friction : spread={}  slip={}  commission/lot={}",
         fmt_price(spread_price, prec), fmt_price(slippage_price, prec), cfg.commission);
     println!("─────────────────────────────────────────");

@@ -1,5 +1,27 @@
-use domain::Side;
+use domain::{Candle, Side};
 use rust_decimal::Decimal;
+
+/// Wilder's RMA-smoothed ATR(period). Returns None for indices < period.
+pub fn rolling_atr(candles: &[Candle], period: usize) -> Vec<Option<Decimal>> {
+    let n = candles.len();
+    let mut out = vec![None; n];
+    if n < period { return out; }
+    let trs: Vec<Decimal> = candles.iter().enumerate().map(|(i, c)| {
+        let hl = c.high - c.low;
+        if i == 0 { return hl; }
+        let pc = candles[i - 1].close;
+        hl.max((c.high - pc).abs()).max((c.low - pc).abs())
+    }).collect();
+    let seed: Decimal = trs[..period].iter().sum::<Decimal>() / Decimal::from(period);
+    out[period - 1] = Some(seed);
+    let mut atr = seed;
+    let k = Decimal::ONE / Decimal::from(period);
+    for i in period..n {
+        atr = trs[i] * k + atr * (Decimal::ONE - k);
+        out[i] = Some(atr);
+    }
+    out
+}
 
 pub fn rolling_ema(prices: &[Decimal], period: usize) -> Vec<Option<Decimal>> {
     let k = Decimal::from(2u32) / Decimal::from((period + 1) as u32);

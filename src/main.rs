@@ -92,6 +92,12 @@ async fn main() -> anyhow::Result<()> {
     let ema_period            = env_usize("EMA_PERIOD",          "20")?;
     let breakeven_at_rr       = env_dec("BREAKEVEN_AT_RR",       "0")?;
     let daily_loss_limit_pct  = env_dec("DAILY_LOSS_LIMIT_PCT",  "0")?;
+    let partial_close_pct     = env_dec("PARTIAL_CLOSE_PCT",     "0")?;
+    let tp2_rr                = env_dec("TP2_RR",                "3.0")?;
+    let pre_fill_invalidate   = env_str("PRE_FILL_INVALIDATE",   "false") == "true";
+    let min_fvg_atr_ratio     = env_dec("MIN_FVG_ATR_RATIO",     "0")?;
+    let min_impulse_atr_ratio = env_dec("MIN_IMPULSE_ATR_RATIO", "0")?;
+    let entry_zone_pct        = env_dec("ENTRY_ZONE_PCT",        "0.5")?;
     let session_from_utc: Option<u32> = match std::env::var("SESSION_FROM_UTC") {
         Ok(s) if !s.is_empty() => Some(s.parse().context("SESSION_FROM_UTC")?),
         _ => None,
@@ -185,6 +191,12 @@ async fn main() -> anyhow::Result<()> {
         session_to_utc,
         breakeven_at_rr,
         daily_loss_limit_pct,
+        partial_close_pct,
+        tp2_rr,
+        pre_fill_invalidate,
+        min_fvg_atr_ratio,
+        min_impulse_atr_ratio,
+        entry_zone_pct,
     };
 
     for symbol in &symbols {
