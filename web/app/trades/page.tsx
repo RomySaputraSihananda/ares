@@ -19,11 +19,8 @@ export default async function TradesPage() {
     ]);
   } catch { error = true; }
 
-  const aresDeals    = deals.filter(d => d.magic === MAGIC && d.type !== 2);
-  const startBalance = deals.filter(d => d.type === 2).reduce((s, d) => s + d.profit, 600);
-  const equityData   = buildEquityCurve(deals, startBalance);
-
-  const closed  = aresDeals.filter(d => d.entry === 1);
+  const aresDeals = deals.filter(d => d.magic === MAGIC && d.type !== 2);
+  const closed    = aresDeals.filter(d => d.entry === 1);
   const wins    = closed.filter(d => d.profit > 0);
   const losses  = closed.filter(d => d.profit < 0);
   const netPnl  = closed.reduce((s, d) => s + d.profit + d.swap + d.commission, 0);
@@ -76,7 +73,7 @@ export default async function TradesPage() {
           {/* Equity curve */}
           <div className="card mb-10">
             <p className="eyebrow mb-6">Equity Curve</p>
-            <EquityChart data={equityData} currency={currency} />
+            <EquityChart deals={closed} currency={currency} />
           </div>
 
           {/* Trade table */}
@@ -124,19 +121,3 @@ export default async function TradesPage() {
   );
 }
 
-function buildEquityCurve(deals: Deal[], start: number) {
-  const sorted = deals
-    .filter(d => d.magic === MAGIC && d.entry === 1)
-    .sort((a, b) => +new Date(a.time) - +new Date(b.time));
-
-  let eq = start;
-  const pts = [{ date: "Start", equity: eq }];
-  for (const d of sorted) {
-    eq += d.profit + d.swap + d.commission;
-    pts.push({
-      date: new Date(d.time).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
-      equity: parseFloat(eq.toFixed(2)),
-    });
-  }
-  return pts;
-}
