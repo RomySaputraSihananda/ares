@@ -1,8 +1,9 @@
 import { getAccount, getDeals, type Deal } from "@/lib/mt5";
 import { formatCurrency, formatDate } from "@/lib/format";
 import EquityChart from "@/components/EquityChart";
+import TradesRefresher from "@/components/TradesRefresher";
 
-export const revalidate = 60;
+export const dynamic = "force-dynamic";
 const MAGIC = 19730;
 
 export default async function TradesPage() {
@@ -42,6 +43,10 @@ export default async function TradesPage() {
         <p className="text-[15px] text-ink-sub">
           All closed trades from ARES · magic {MAGIC}
         </p>
+        <div className="mt-3 flex items-center gap-2">
+          <span className="w-1.5 h-1.5 rounded-full bg-bull pulse-dot" />
+          <TradesRefresher />
+        </div>
       </section>
 
       {error ? (
