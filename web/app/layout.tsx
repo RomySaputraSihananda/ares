@@ -53,6 +53,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   return (
     <html lang="en">
       <body className="min-h-screen antialiased">
+        <div className="relative z-10">
         <Nav version={version} />
         <main className="max-w-5xl mx-auto px-4 sm:px-6 py-12">
           {children}
@@ -109,6 +110,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             </div>
           </div>
         </footer>
+        </div>
       </body>
     </html>
   );
