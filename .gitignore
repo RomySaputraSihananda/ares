@@ -1,3 +1,8 @@
 /target
 .env
 .ares_state_*.json
+
+# web portfolio
+web/.next/
+web/node_modules/
+web/.env.local
